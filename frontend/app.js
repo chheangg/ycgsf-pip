@@ -170,7 +170,7 @@ $("mute").onclick = () => {
 };
 async function playLine(text) {
   voiceBusy = true; const gen = voiceGen; toNative({ type: "speaking", on: true });
-  try { await speakNow(text, gen); } catch {}
+  try { await speakNow(text, gen); } catch (e) { log("speech failed", e); }
   if (gen !== voiceGen) return;            // an urgent line took over
   voiceBusy = false; setTimeout(() => !voiceBusy && toNative({ type: "speaking", on: false }), 300);
   if (pendingLine) { const next = pendingLine; pendingLine = null; playLine(next); }
@@ -282,11 +282,6 @@ function followRoute() {
     S.stepIdx++;
   }
   render();
-}
-function startRoute(r) {
-  ensureGPS(); ensureCamera();
-  S.route = r; S.stepIdx = 1; S.spokenFor = {}; S.back = null; S.find = null; S.walk = null; S.walkTok = null;
-  log("route", r.name, r.total_m + "m", r.steps.length, "steps", r.google_maps || ""); render();
 }
 async function planTo(body) {
   ensureGPS();
@@ -1088,7 +1083,7 @@ async function slamCheckRoom(m) {
     log("inside", m.room, "?", JSON.stringify(c));
     if (c.inside) { m.done = true; say(`You're in the ${m.room}.`); S.mission = null; S.trip = null; render(); }
     else if (c.room && c.room !== "unknown") { if (m.place && m.place !== c.room) say(`You've left the ${m.place}. This is a ${c.room}.`); m.place = c.room; }
-  } catch {}
+  } catch (e) { log("room check failed", e); }
 }
 async function slamDecide(m, why) {
   m.phase = "decide"; render();
@@ -1399,7 +1394,7 @@ async function lookAround(why) {
   const views = [], headings = [];
   if (NATIVE && N.heading != null) {
     // Measured spin: grab a view each time the phone has turned another ~45 degrees (up to 25 s).
-    const startH = N.heading; let turned = 0, last = N.heading, nextAt = 0, t0 = Date.now();
+    let turned = 0, last = N.heading, nextAt = 0, t0 = Date.now();
     const ring = S.orient = { seen: 0, dirs: [], name: m.room, mission: true };   // the screen shows the 360 ring (08c)
     while (S.mission && views.length < 8 && Date.now() - t0 < 25000) {
       turned += ((N.heading - last + 540) % 360) - 180; last = N.heading; spun(ring);
@@ -1483,7 +1478,7 @@ async function obstacleCheck(m) {
       m.blockedCount = (m.blockedCount || 0) + 1;
       if (m.blockedCount >= 2) { m.blockedCount = 0; lookAround(`blocked by ${blocker?.label || "an obstacle"} on the way to the ${m.target || m.via}`); }
     } else m.blockedCount = 0;
-  } catch {}
+  } catch (e) { log("obstacle check failed", e); }
 }
 
 // ---------- DOORS: what kind, where the handle is, push or pull; LiDAR says when it's open ----------
@@ -1585,7 +1580,7 @@ async function wallCheck(m) {
     if (!S.mission || S.mission.phase !== "scan") return;
     if (r.clear.ahead < 0.25 && !r.hazards.length) mSay("There's a wall in front of you. Turn slowly to your right.", 8000);
     else mSay(`Keep turning slowly. I'm looking for the ${m.target || m.via}.`, 8000);
-  } catch {}
+  } catch (e) { log("wall check failed", e); }
 }
 
 // Arrived at a door: one look decides what kind it is; open -> through, closed -> the handle (or wait for it to open).
@@ -1607,26 +1602,6 @@ async function doorStep(m) {
   finally { if (S.mission) m.doorBusy = false; }
 }
 
-// At every landmark (start, door reached, lost, wrong room) Pip looks and re-plans the next sub-goal.
-async function missionReplan(why) {
-  const m = S.mission; if (!m || m.planning) return;
-  m.planning = true; m.phase = "plan"; render();
-  try {
-    const r = await lookAndPlan(m.room, [...m.history, why]);
-    if (!S.mission) return;
-    const p = r?.plan || {};
-    m.history.push(`${why}: saw ${r?.scene?.summary || "?"}; next ${p.target || p.search}`);
-    if (p.reached) { m.phase = "verify"; m.phaseAt = Date.now(); say(p.say || `Checking if this is the ${m.room}.`); return; }
-    if (p.action === "open_door" || (p.action === "walk" && /door|doorway/.test(why))) {   // go through, then look again
-      say(p.say); m.phase = "through"; m.phaseAt = Date.now(); render(); return;
-    }
-    m.via = (p.search || "door").toLowerCase(); m.target = p.target || m.via;
-    m.door = null; m.doorAt = 0; m.dxs = null; m.centered = false; m.lastDir = null; m.gotTapped = false; m.doorChecks = 0;
-    say(p.say || `Let's find a ${m.via}.`);
-    mPhase("scan");
-  } catch (e) { log("replan failed", e); m.via = "door"; mPhase("scan", "Turn slowly, I'm looking for a door."); }
-  finally { if (S.mission) S.mission.planning = false; }
-}
 function mSay(text, every = 4000) {
   const m = S.mission;
   if (speaking() && every > 0) return;      // never pile up guidance chatter
@@ -2003,11 +1978,6 @@ function cycleListen() {   // Setup > LISTEN, or the H key
   listenMode = { always: "wake", wake: "push", push: "always" }[listenMode]; alwaysOn = listenMode !== "push";
   localStorage.setItem("pip.listen", listenMode); showListen();
   say({ always: "I'm always listening. Just talk to me.", wake: "Say Hey Pip when you need me.", push: "Okay, hold space to talk." }[listenMode]);
-}
-function stopMic() {
-  micStream?.getTracks().forEach((t) => t.stop());
-  try { mic?.disconnect(); micNode?.disconnect(); } catch {}
-  micStream = mic = micNode = null;
 }
 function to16k(parts, rate) {
   const all = new Float32Array(parts.reduce((n, p) => n + p.length, 0));

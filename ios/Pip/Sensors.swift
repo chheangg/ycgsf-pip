@@ -21,7 +21,6 @@ final class Sensors: NSObject, ObservableObject, CLLocationManagerDelegate {
     private let location = CLLocationManager()
     private(set) var gps: CLLocation?
     private var gpsOn = false
-    private var walkedOffset: Double = 0
     private var mapTick = 0
     // Compass: which way the back camera points, clockwise degrees from north (nil until the magnetometer is calibrated).
     // GPS routes need it, because ARKit's heading only says how far you turned since the app started.

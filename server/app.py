@@ -106,14 +106,6 @@ def llm(name: str, system: str, user: str, max_new_tokens: int = 160) -> str:
     return re.sub(r"<think>.*?</think>", "", msg.get("content") or "", flags=re.S).strip()
 
 
-def llm_json(name: str, system: str, user: str, max_new_tokens: int = 220) -> dict:
-    text = llm(name, system + "\nReply with ONE JSON object only, no prose, no code fences.", user, max_new_tokens)
-    m = re.search(r"\{.*\}", text, re.S)
-    if not m:
-        raise ValueError(f"no JSON in: {text[:200]}")
-    return json.loads(m.group(0))
-
-
 def _up(url: str) -> bool:
     try:
         return httpx.get(url.removesuffix("/v1") + "/health", timeout=2).status_code == 200
