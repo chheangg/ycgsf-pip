@@ -12,7 +12,8 @@
 | **Sun Oct 25, 12:00 PM** | **Check-in + hackathon start, the Basement, DiB** (organizer Discord) |
 | **Sun Oct 25, ~11:21 AM** | MLH "is starting!" email — reminder to **check in** |
 | During the day | ~**4-hour** build session using open models / open-source AI tools |
-| **Sun Oct 25, 6:30 PM** | **Challenge submissions close** (MLH challenge page; not confirmed in Discord) |
+| **Sun Oct 25, 5:00 PM** | **Initial submission due** (Mohak, Discord #announcements 3:55 PM; save draft on MLH to add teammates) |
+| **Sun Oct 25, 6:30 PM** | **Hard submission cutoff, no late submissions** (Mohak, Discord 3:55 PM + MLH challenge page) |
 | **Sun Oct 25, 8:00 PM** | Fest end (MLH official) |
 | Same day | Host walks through how to submit; projects must be done before host deadline |
 
