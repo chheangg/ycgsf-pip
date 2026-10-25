@@ -495,7 +495,8 @@ async function startMic() {
 }
 // Always-on listening: cut speech out of the mic stream by loudness, send each phrase to Whisper on the
 // 4090. Only phrases starting with "Hey Pip" (or right after Pip spoke) reach the brain.
-let alwaysOn = true, vad = { on: false, quietMs: 0, speechMs: 0, floor: 0.01, buf: [] }, followUntil = 0;
+let listenMode = localStorage.getItem("pip.listen") || "always";   // always | wake | push
+let alwaysOn = listenMode !== "push", vad = { on: false, quietMs: 0, speechMs: 0, floor: 0.01, buf: [] }, followUntil = 0;
 async function startListening() {
   await startMic();
   micNode.onaudioprocess = (e) => {
@@ -513,11 +514,13 @@ async function startListening() {
     if (vad.on && (vad.quietMs > 700 || total > 9000)) {
       const phrase = vad.buf; vad = { ...vad, on: false, quietMs: 0, speechMs: 0, buf: [] };
       const pcm = to16k(phrase, ac.sampleRate);
-      if (pcm.length > 8000) askPip({ body: pcm.buffer, wake: true });
+      if (pcm.length > 8000) askPip({ body: pcm.buffer, wake: listenMode === "always" ? "always" : "1" });
     }
   };
-  $("listen").textContent = "listening for “Hey Pip”"; $("listen").className = "v ok";
+  showListen(); $("listen").className = "v ok";
 }
+const LISTEN_LABEL = { always: "always listening (just talk)", wake: "listening for “Hey Pip”", push: "hold Space to talk" };
+function showListen() { $("listen").textContent = LISTEN_LABEL[listenMode]; }
 function stopMic() {
   micStream?.getTracks().forEach((t) => t.stop());
   try { mic?.disconnect(); micNode?.disconnect(); } catch {}
@@ -545,10 +548,10 @@ function status() {
 }
 async function askPip({ body, text, wake = false }) {
   const url = `${SERVER}/talk?session=${SESSION}&ctx=${encodeURIComponent(JSON.stringify(status()))}` + (text ? `&text=${encodeURIComponent(text)}` : "") +
-              (wake ? `&wake=1&followup=${Date.now() < followUntil ? 1 : 0}` : "");
+              (wake ? `&wake=${wake}&followup=${Date.now() < followUntil ? 1 : 0}` : "");
   try {
     const r = await (await fetch(url, { method: "POST", body: body || "" })).json();
-    if (r.ignored) { log("(not for Pip)", r.heard); if (r.heard) $("listen").textContent = `heard “${r.heard.slice(0, 40)}” (say “Hey Pip” first)`; return; }
+    if (r.ignored) { log("(not for Pip)", r.heard); if (r.heard && listenMode === "wake") $("listen").textContent = `heard “${r.heard.slice(0, 40)}” (say “Hey Pip” first)`; return; }
     $("listen").textContent = `heard “${(r.heard || "").slice(0, 40)}”`;
     if (r.awake) tap("both", "got");
     followUntil = Date.now() + 8000;   // a quick "yes" after Pip speaks doesn't need "Hey Pip"
@@ -626,7 +629,7 @@ async function start() {
   if (started) return; started = true;
   ac = new AudioContext();
   $("start").remove();
-  say("Hi, I'm Pip. Hold space to talk to me. Press T to test the taps.");
+  say(listenMode === "always" ? "Hi, I'm Pip. I'm listening, just talk to me." : listenMode === "wake" ? "Hi, I'm Pip. Say Hey Pip when you need me." : "Hi, I'm Pip. Hold space to talk.");
   checkServer(); setInterval(checkServer, 15000);
   fetch(SERVER + "/warmup", { method: "POST" }).then(() => checkServer()).catch(() => {});
   startSegment();   // GPS and camera stay off until the conversation needs them
@@ -649,8 +652,11 @@ document.addEventListener("keydown", (e) => {
   else if (k === "l") { const t = prompt("What should Pip find? (e.g. door knob)"); if (t) findStart(t); }
   else if (e.key === "Escape") { if (S.mission) { S.mission = null; say("Stopped."); render(); } else findStop("Stopped looking."); }
   else if (k === "n" && S.mission?.phase === "through") missionReplan("went through the door");
-  else if (k === "h") { alwaysOn = !alwaysOn; say(alwaysOn ? "I'm listening for Hey Pip." : "Okay, only when you hold space.");
-                        $("listen").textContent = alwaysOn ? "listening for “Hey Pip”" : "push-to-talk only"; }
+  else if (k === "h") {
+    listenMode = { always: "wake", wake: "push", push: "always" }[listenMode]; alwaysOn = listenMode !== "push";
+    localStorage.setItem("pip.listen", listenMode); showListen();
+    say({ always: "I'm always listening. Just talk to me.", wake: "Say Hey Pip when you need me.", push: "Okay, hold space to talk." }[listenMode]);
+  }
   else if (k === "b") goBack();
   else if (k === "s") saveSpot(`spot ${S.spots.length + 1}`);
   else if (k === "r") say(S.lastSpoken);
