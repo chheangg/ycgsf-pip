@@ -15,7 +15,7 @@
   .box { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
   .k { color: var(--dim); font-size: 14px; } .v { font-size: 20px; font-weight: 650; }
   .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
-  video { width: 100%; max-height: 300px; object-fit: cover; border-radius: 12px; background: #111; }
+  video { width: 100%; max-height: 62vh; object-fit: contain; border-radius: 12px; background: #111; }
   #start { font: inherit; font-size: 24px; padding: 18px; border-radius: 14px; border: 0; background: var(--fg); color: #000; cursor: pointer; }
   kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; padding: 1px 7px; font-size: 15px; }
   #keys { color: var(--dim); font-size: 15px; display: flex; flex-wrap: wrap; gap: 6px 16px; }
@@ -35,6 +35,7 @@
     <div class="box"><div class="k">Way ahead</div><div class="v" id="clear">–</div></div>
     <div class="box"><div class="k">Models (4090)</div><div class="v" id="server">–</div></div>
   </div>
+  <input id="ask" placeholder="Or type to Pip and press Enter (e.g. can I go to the restroom?)" style="font-size:18px;padding:12px">
   <video id="cam" autoplay muted playsinline></video>
   <div class="row">
     <label class="box"><div class="k">Camera (point it forward)</div><select id="camsel"></select></label>
@@ -44,7 +45,7 @@
   <div id="keys">
     <span><kbd>Space</kbd> hold to talk</span><span><kbd>D</kbd> what's around</span><span><kbd>L</kbd> find something ("left left, up up")</span><span><kbd>B</kbd> go back</span>
     <span><kbd>S</kbd> remember this spot</span><span><kbd>R</kbd> repeat</span><span><kbd>P</kbd> pause/resume</span>
-    <span><kbd>T</kbd> test left/right taps</span><span><kbd>←</kbd><kbd>→</kbd> I turned left/right</span>
+    <span><kbd>T</kbd> test left/right taps</span><span><kbd>←</kbd><kbd>→</kbd> I turned left/right (also while teaching a route)</span>
     <span>Simulate walking: <kbd>W</kbd> step, <kbd>A</kbd>/<kbd>F</kbd> rotate</span>
   </div>
   <div id="log"></div>

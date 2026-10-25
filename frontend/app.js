@@ -8,6 +8,8 @@ const qs = new URLSearchParams(location.search);
 const SERVER = (qs.get("server") || localStorage.getItem("ycgsf.server") || "http://100.71.218.127:8100").replace(/\/$/, "");
 $("srv").value = SERVER;
 $("srv").onchange = (e) => { localStorage.setItem("ycgsf.server", e.target.value); location.reload(); };
+const SESSION = Math.random().toString(36).slice(2);
+const routesStore = () => { try { return JSON.parse(localStorage.getItem("pip.routes") || "{}"); } catch { return {}; } };
 const log = (...a) => { const el = $("log"); el.textContent = `${new Date().toLocaleTimeString()} ${a.join(" ")}\n` + el.textContent.slice(0, 4000); };
 
 // ---------- geo helpers ----------
@@ -33,6 +35,7 @@ const S = {
   clear: null, hint: "clear", hazards: [], lastSpoken: "",
   trail: [], seg: null, spots: [], crumbs: [], back: null,
   find: null,   // {target, move, size, saidAt, lastSay, seenAt, gotAt}
+  learning: null, // {name, start, trailIdx}: recording a route to teach Pip (works indoors)
 };
 
 // ---------- 1. AUDIO: tip-tap with swapped channels ----------
@@ -120,7 +123,7 @@ function endSegment(turn) {
 
 // ---------- 3. ROUTE following (long-term plan from the 4090) ----------
 function navCue() {
-  if (S.back) return backCue();
+  if (S.back) return backCue();   // also replays taught routes
   if (!S.route || !S.pos) return null;
   const step = S.route.steps[S.stepIdx];
   if (!step) return null;
@@ -150,6 +153,10 @@ function followRoute() {
     S.stepIdx++;
   }
   render();
+}
+function startRoute(r) {
+  S.route = r; S.stepIdx = 1; S.spokenFor = {}; S.back = null; S.find = null;
+  log("route", r.name, r.total_m + "m", r.steps.length, "steps", r.google_maps || ""); render();
 }
 async function planTo(body) {
   if (!S.pos) return say("I don't know where you are yet. Waiting for GPS.");
@@ -192,15 +199,44 @@ function backCue() {
     return left < 6 ? { side: b.steps[b.i + 1]?.action === "left" ? "left" : b.steps[b.i + 1]?.action === "right" ? "right" : "both",
                         interval: Math.max(0.15, left / 4), kind: "tap" } : null;
   }
-  if (st.action === "arrive") { say("You should be back where you started."); S.back = null; }
+  if (st.action === "arrive") { say(b.arriveMsg || "You should be back where you started."); S.back = null; }
   return null;
 }
 
+// ---------- teach a route (indoors too): walk it once, Pip replays it later ----------
+function learnStart(name, start) {
+  endSegment(null);
+  S.learning = { name, start: start || "here", trailIdx: S.trail.length };
+  say(`Recording the way to ${name}. Walk there, and use the arrow keys when you turn. Say "we're here" when you arrive.`, { interrupt: false });
+}
+function learnEnd() {
+  if (!S.learning) return say("I wasn't recording a route.");
+  endSegment(null);
+  const segs = S.trail.slice(S.learning.trailIdx);
+  const all = routesStore(); all[S.learning.name] = { start: S.learning.start, segments: segs, t: Date.now() };
+  localStorage.setItem("pip.routes", JSON.stringify(all));
+  say(`Saved the way to ${S.learning.name}, from ${S.learning.start}. Next time just ask me to take you there.`, { interrupt: false });
+  S.learning = null;
+}
+function replay(name) {
+  const all = routesStore(), key = Object.keys(all).find((k) => k.toLowerCase().includes(name.toLowerCase()) || name.toLowerCase().includes(k.toLowerCase()));
+  if (!key) return say(`I don't have a route called ${name} yet.`);
+  const steps = [];
+  for (const sg of all[key].segments) {
+    steps.push({ action: "walk", seconds: Math.round(sg.seconds), landmark: sg.landmarks?.at(-1) || null });
+    if (sg.turn_after === "left" || sg.turn_after === "right") steps.push({ action: sg.turn_after, seconds: 0 });
+  }
+  steps.push({ action: "arrive" });
+  S.back = { steps, i: 0, started: Date.now(), arriveMsg: `You should be at ${key}.` }; S.route = null;
+  const first = steps[0];
+  say(`Starting from ${all[key].start}. Walk straight about ${first.seconds} seconds.`, { interrupt: false });
+}
+
 // ---------- FIND IT: "left left", "up up" to guide a hand to an object ----------
-function findStart(target) {
+function findStart(target, quiet = false) {
   if (!target) return say("What should I find?");
   S.find = { target, move: null, size: 0, saidAt: 0, lastSay: "", seenAt: 0, gotAt: 0, started: Date.now() };
-  say(`Looking for the ${target}. Move the camera slowly.`);
+  if (!quiet) say(`Looking for the ${target}. Move the camera slowly.`);
 }
 function findStop(msg) { if (S.find) { S.find = null; if (msg) say(msg); } }
 function findCue() {
@@ -230,7 +266,12 @@ async function findStep(blob) {
 // ---------- camera -> local planner (obstacles) ----------
 let video, canvas, busy = false, lastFrame = null, hazardSaidAt = 0;
 async function startCamera(deviceId) {
-  const stream = await navigator.mediaDevices.getUserMedia({ video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: "environment" }, audio: false });
+  // Widest view the camera offers: full HD, minimum zoom (many laptop/USB cams default to a cropped 640x480).
+  const base = { width: { ideal: 1920 }, height: { ideal: 1080 }, ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: "environment" }) };
+  const stream = await navigator.mediaDevices.getUserMedia({ video: base, audio: false });
+  const track = stream.getVideoTracks()[0], caps = track.getCapabilities?.() || {};
+  if (caps.zoom) try { await track.applyConstraints({ advanced: [{ zoom: caps.zoom.min }] }); } catch {}
+  const st = track.getSettings(); log(`camera ${st.width}x${st.height}${caps.zoom ? ", zoom " + caps.zoom.min : ""}`);
   video = $("cam"); video.srcObject = stream;
   canvas = canvas || document.createElement("canvas");
   const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
@@ -240,7 +281,7 @@ async function startCamera(deviceId) {
 }
 async function frameBlob() {
   if (!video?.videoWidth) return null;
-  canvas.width = 480; canvas.height = Math.round((480 * video.videoHeight) / video.videoWidth);
+  canvas.width = 640; canvas.height = Math.round((640 * video.videoHeight) / video.videoWidth);   // full width, no crop
   canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
   return new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.7));
 }
@@ -288,33 +329,48 @@ function to16k(parts, rate) {
 async function sendTalk() {
   const pcm = to16k(chunks, ac.sampleRate); chunks = [];
   if (pcm.length < 4000) return;
-  const ctx = { navigating_to: S.route?.name || null, next_turn: S.route?.steps[S.stepIdx]?.turn || null,
-                gps: S.gpsOk ? "ok" : "weak", saved_spots: S.spots.map((s) => s.label), hazards: S.hazards.map((h) => `${h.label} ${h.side}`) };
-  try {
-    const r = await (await fetch(`${SERVER}/talk?ctx=${encodeURIComponent(JSON.stringify(ctx))}`, { method: "POST", body: pcm.buffer })).json();
-    log("HEARD", r.heard, "->", r.intent, r.destination || "", `${r.ms}ms (stt ${r.ms_stt}ms)`);
-    act(r);
-  } catch (e) { say("I can't reach the voice model right now."); log(e); }
+  return askPip({ body: pcm.buffer });
 }
+function status() {
+  return { pos: S.pos, heading: S.heading == null ? null : Math.round(S.heading), gps: S.sim ? "simulated" : S.gpsOk ? "ok" : "weak",
+           gps_accuracy_m: S.acc == null ? null : Math.round(S.acc), navigating_to: S.route?.name || null,
+           next_turn: S.route?.steps[S.stepIdx]?.turn || null, saved_spots: S.spots.map((s) => s.label),
+           taught_routes: Object.keys(routesStore()), hazards: S.hazards.map((h) => `${h.label} ${h.side}`),
+           learning: S.learning?.name || null };
+}
+async function askPip({ body, text }) {
+  const url = `${SERVER}/talk?session=${SESSION}&ctx=${encodeURIComponent(JSON.stringify(status()))}` + (text ? `&text=${encodeURIComponent(text)}` : "");
+  try {
+    const r = await (await fetch(url, { method: "POST", body: body || "" })).json();
+    log("HEARD", r.heard, "->", (r.tools || []).map((t) => t.tool).join(",") || "-", r.action?.type || "", `${r.ms}ms (stt ${r.ms_stt}ms)`);
+    act(r);
+  } catch (e) { say("I can't reach my planner right now."); log(e); }
+}
+// The brain (Qwen3-14B) answers with words + at most one action for the app.
 async function act(r) {
-  switch (r.intent) {
-    case "navigate": return r.destination ? planTo({ destination: r.destination }) : say(r.say || "Where would you like to go?");
-    case "locate": return findStart(r.label || r.destination);
-    case "backtrack": return goBack(r.label);
-    case "describe": return describe(r.heard);
-    case "where_am_i": return whereAmI();
+  if (r.say) say(r.say);
+  const a = r.action;
+  if (!a) return;
+  switch (a.type) {
+    case "navigate": return startRoute(a.route);
+    case "find": return findStart(a.target, true);
+    case "describe": return describe("What's around me?", false);
+    case "where": return whereAmI();
+    case "back": return goBack(a.label);
+    case "replay": return replay(a.name);
+    case "learn_start": return learnStart(a.name, a.start);
+    case "learn_end": return learnEnd();
     case "repeat": return say(S.lastSpoken);
-    case "stop": if (S.find) return findStop("Stopped looking."); S.paused = true; return say("Paused. Say resume when you're ready.");
-    case "resume": S.paused = false; return say("Resuming.");
-    case "save_spot": return saveSpot(r.label || "this spot");
-    default: return say(r.say);
+    case "pause": S.paused = true; return;
+    case "resume": S.paused = false; return;
+    case "stop": S.find = null; S.route = null; S.back = null; render(); return;
   }
 }
-async function describe(question = "What's around me?") {
+async function describe(question = "What's around me?", interrupt = true) {
   const blob = lastFrame || (await frameBlob());
   if (!blob) return say("The camera isn't on.");
   const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("question", question);
-  try { say((await (await fetch(SERVER + "/describe", { method: "POST", body: fd })).json()).say); }
+  try { say((await (await fetch(SERVER + "/describe", { method: "POST", body: fd })).json()).say, { interrupt }); }
   catch { say("I can't reach the vision model right now."); }
 }
 async function whereAmI() {
@@ -368,6 +424,7 @@ async function start() {
   audioLoop();
 }
 $("start").onclick = start;
+$("ask").addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.value.trim()) { say("…", {}); askPip({ text: e.target.value.trim() }); e.target.value = ""; } });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Enter") return start();
   if (!started || e.repeat || e.target.tagName === "INPUT") return;
