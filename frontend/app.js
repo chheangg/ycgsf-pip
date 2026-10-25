@@ -15,10 +15,11 @@ const toNative = (m) => NATIVE && window.webkit.messageHandlers.pip.postMessage(
 const nativeWaits = new Map(); let nativeId = 0;
 const askNative = (msg) => new Promise((res) => { const id = ++nativeId; nativeWaits.set(id, res); toNative({ ...msg, id });
                                                   setTimeout(() => { if (nativeWaits.delete(id)) res(null); }, 1500); });
-const N = { heading: null, pose: null, depth: null, distance: 0, camera: "" };   // latest phone sensor snapshot
+const N = { heading: null, pose: null, depth: null, distance: 0, camera: "", doors: [], frontiers: [], mapped: 0 };   // phone sensors
 window.pipNative = {
   update(snap) {
     N.heading = snap.heading; N.pose = snap.pose || null; N.depth = snap.depth || null; N.distance = snap.distance_m || 0; N.camera = snap.camera;
+    if (snap.doors) { N.doors = snap.doors; N.frontiers = snap.frontiers || []; N.mapped = snap.mapped_m2 || 0; }
     S.heading = snap.heading;
     if (snap.gps) onFix({ lat: snap.gps.lat, lon: snap.gps.lon }, snap.gps.acc);
     if (N.depth && $("clear") && !S.mission && !S.find) $("clear").textContent = `ahead ${N.depth.ahead.toFixed(1)} m`;
@@ -311,6 +312,107 @@ function replay(name) {
   say(`Starting from ${all[key].start}. Walk straight about ${first.seconds} seconds.`);
 }
 
+// ---------- SLAM MISSION (iPhone with LiDAR): decide from the floor map, not from guesses ----------
+// map (spin to map the room) -> decide (pick a REAL door/opening from the map) -> go (A* path, taps) ->
+// at a door: open it -> through -> map again ... -> done only when the vision model agrees we're inside.
+const slamReady = () => NATIVE && N.pose && N.pose.tracking === "ok";
+const relDir = (bearing) => { const off = ((bearing - N.heading + 540) % 360) - 180;
+  return Math.abs(off) < 35 ? "ahead" : Math.abs(off) > 135 ? "behind" : off < 0 ? "left" : "right"; };
+function slamCandidates(m) {
+  const me = N.pose, out = [];
+  const visited = (p) => m.visited.some((v) => roomDist(v, p) < 1.0);
+  for (const d of N.doors) out.push({ id: "door-" + d.id.slice(0, 6), kind: "door", x: d.x, z: d.z });
+  for (const f of N.frontiers) {
+    if (out.some((c) => roomDist(c, f) < 0.8)) continue;              // a door there already covers it
+    if (roomDist(me, f) < 0.8) continue;
+    out.push({ id: `open-${Math.round(f.x * 10)}_${Math.round(f.z * 10)}`, kind: "opening", x: f.x, z: f.z });
+  }
+  return out.map((c) => ({ ...c, distance_m: +roomDist(me, c).toFixed(1), direction: relDir(roomBearing(me, c)), visited: visited(c) }))
+            .sort((a, b) => a.distance_m - b.distance_m).slice(0, 10);
+}
+async function slamMap(m, why) {
+  m.phase = "map"; m.phaseAt = Date.now(); render();
+  say(m.decisions.length ? "Let me map this spot. Turn slowly all the way around." : "I'll map the room first. Turn slowly all the way around.");
+  let turned = 0, last = N.heading; const t0 = Date.now();
+  await new Promise((r) => setTimeout(r, 1500));
+  while (S.mission === m && Math.abs(turned) < 330 && Date.now() - t0 < 30000) {
+    turned += ((N.heading - last + 540) % 360) - 180; last = N.heading;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (S.mission !== m) return;
+  say("Okay, stop.", { urgent: true });
+  await slamCheckRoom(m);                                           // are we already there?
+  if (S.mission === m && !m.done) slamDecide(m, why);
+}
+async function slamCheckRoom(m) {
+  const blob = await frameBlob(); if (!blob) return;
+  const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("room", m.room);
+  try {
+    const c = await (await fetch(SERVER + "/check_room", { method: "POST", body: fd })).json();
+    log("inside", m.room, "?", JSON.stringify(c));
+    if (c.inside) { m.done = true; say(`You're in the ${m.room}.`); S.mission = null; render(); }
+    else if (c.room && c.room !== "unknown") { if (m.place && m.place !== c.room) say(`You've left the ${m.place}. This is a ${c.room}.`); m.place = c.room; }
+  } catch {}
+}
+async function slamDecide(m, why) {
+  m.phase = "decide"; render();
+  const cands = slamCandidates(m);
+  if (!cands.length) return slamBacktrack(m, "I can't see any way through from here");
+  const r = await post("/decide_slam", { goal: m.room, candidates: cands.map(({ x, z, ...c }) => c), memory: m.history.slice(-6), place: m.place || "unknown" });
+  if (S.mission !== m) return;
+  log("slam decide:", r.choice, r.why, JSON.stringify(cands.map((c) => `${c.id} ${c.distance_m}m ${c.direction}${c.visited ? " V" : ""}`)));
+  if (r.choice === "backtrack") return slamBacktrack(m, r.why);
+  const c = cands.find((x) => x.id === r.choice);
+  m.decisions.push({ x: N.pose.x, z: N.pose.z });                  // a junction to come back to
+  m.history.push(`${why}: in ${m.place || "?"}; went for ${c.kind} ${c.distance_m} m ${c.direction} (${r.why})`);
+  m.target = c; say(r.say);
+  slamGo(m);
+}
+async function slamGo(m) {
+  m.phase = "go"; m.phaseAt = Date.now(); m.path = null; render();
+  await slamRepath(m);
+}
+async function slamRepath(m) {
+  m.repathAt = Date.now();
+  const pts = await askNative({ type: "path", x: m.target.x, z: m.target.z });
+  if (S.mission !== m) return;
+  if (!pts || !pts.length) { log("no path to", m.target.id); m.path = [{ x: m.target.x, z: m.target.z }]; return; }   // straight line
+  m.path = pts;
+}
+function slamNext(m) {   // next waypoint at least 0.5 m away
+  if (!m.path) return null;
+  while (m.path.length > 1 && roomDist(N.pose, m.path[0]) < 0.5) m.path.shift();
+  return m.path[0];
+}
+function slamStep(m) {
+  if (!slamReady()) { if (Date.now() - (m.trackSaidAt || 0) > 10000) { m.trackSaidAt = Date.now(); say("I'm losing track. Hold the phone steady and point it around the room."); } return; }
+  const t = Date.now();
+  if (m.phase === "go" && m.target) {
+    const d = roomDist(N.pose, m.target);
+    if (t - (m.obstacleCheckAt || 0) > 1500) obstacleCheck(m);
+    if (t - m.repathAt > 3000) slamRepath(m);
+    if (d < 0.9) {
+      m.visited.push({ x: m.target.x, z: m.target.z });
+      if (m.target.kind === "door") { m.doorPos = { x: m.target.x, z: m.target.z }; doorStep(m); }
+      else slamMap(m, `reached an opening`);
+      return;
+    }
+    if (t - (m.distSaidAt || 0) > 7000 && d > 1.5) { m.distSaidAt = t; mSay(`About ${Math.round(d)} meters to go.`, 7000); }
+  }
+  if (m.phase === "through" && m.doorPos && roomDist(N.pose, m.doorPos) > 1.5) { m.doorPos = null; slamMap(m, "walked through a door"); }
+  if (m.phase === "through" && t - m.phaseAt > 15000) slamMap(m, "should be through the door");
+  if (m.phase === "slamback" && m.backTo && roomDist(N.pose, m.backTo) < 0.7) { m.backTo = null; slamMap(m, "came back to a junction"); }
+}
+function slamBacktrack(m, why) {
+  m.backtracks = (m.backtracks || 0) + 1;
+  const back = m.decisions.pop();
+  if (!back || m.backtracks > 4) return giveUp(m);
+  m.history.push(`dead end: ${why}`);
+  m.phase = "slamback"; m.backTo = back; m.target = { ...back, kind: "junction", id: "back" }; render();
+  say(`${why[0].toUpperCase() + why.slice(1)}. Let's go back, about ${Math.max(1, Math.round(roomDist(N.pose, back)))} meters.`);
+  askNative({ type: "path", x: back.x, z: back.z }).then((pts) => { if (S.mission === m) m.path = pts || [back]; });
+}
+
 // ---------- GO TO A ROOM: door -> line up -> walk -> through -> verify (done only on proof) ----------
 const sideOf = (dx) => (dx < 0 ? "left" : "right");
 // Walking toward a pinned spot in the room (ARKit): taps on the side to turn toward when off course,
@@ -338,6 +440,7 @@ function missionStart(room, via, proof) {
   S.find = null; S.route = null; S.back = null;
   S.mission = { room, via: via || "door", proof: proof || ["toilet", "sink"], phase: "plan", phaseAt: Date.now(),
                 door: null, doorAt: 0, proofHit: null, proofAt: 0, saidAt: 0, lastSay: "", tries: 0, history: [], planning: false };
+  if (slamReady()) { m.slam = true; m.visited = []; m.decisions = []; return slamMap(m, "start"); }
   lookAround("start");
 }
 // Deduction step: the user turns slowly in place while Pip grabs ~8 views; the vision model describes each
@@ -485,7 +588,7 @@ async function doorStep(m) {
     if (d.door === "none") { return lookAround("thought I was at a door but don't see one up close"); }
     if (d.door === "open" || d.type === "automatic") {
       say(d.type === "automatic" ? "It's an automatic door. Just walk straight ahead slowly, it'll open." : "It's open. Walk through slowly, about two steps.");
-      m.phase = "through"; m.phaseAt = Date.now(); render(); return;
+      m.phase = "through"; m.phaseAt = Date.now(); if (m.slam && !m.doorPos && N.pose) m.doorPos = { x: N.pose.x, z: N.pose.z }; render(); return;
     }
     if (d.type === "sliding" && m.phase !== "door") {
       say(`It's a sliding door. ${/left/.test(d.opens) ? "Slide it to the left." : /right/.test(d.opens) ? "Slide it to the right." : "Find the edge and slide it open."}`);
@@ -566,6 +669,7 @@ function backtrack(m, why) {
 }
 function missionCue() {
   const m = S.mission, t = Date.now();
+  if (m.slam && (m.phase === "go" || m.phase === "slamback")) { const nx = slamNext(m); return nx ? walkToCue(nx) : null; }
   if (m.phase === "backtrack") return S.back ? backCue() : (m.backTo ? walkToCue(m.backTo) : null);
   if (m.phase === "turn" && m.turnTo != null && N.heading != null) {
     const off = ((m.turnTo - N.heading + 540) % 360) - 180;
@@ -777,7 +881,10 @@ async function localLoop() {
     const blob = await frameBlob();
     if (blob && S.mission) {
       busy = true; lastFrame = blob;
-      try { await missionStep(blob); } catch (e) { $("clear").textContent = "no model"; }
+      try {
+        if (S.mission.slam && !["handle", "door"].includes(S.mission.phase)) slamStep(S.mission);   // geometry drives it
+        else await missionStep(blob);
+      } catch (e) { $("clear").textContent = "no model"; log(e); }
       busy = false;
     } else if (blob && S.find) {
       busy = true; lastFrame = blob;
@@ -943,7 +1050,7 @@ function render() {
   $("gps").className = "v " + (S.sim || S.gpsOk ? "ok" : "warn");
   $("heading").textContent = S.heading == null ? "walk a few steps" : `${Math.round(S.heading)}°`;
   const st = S.route?.steps[S.stepIdx];
-  $("next").textContent = S.mission ? `${S.mission.room}: ${S.mission.phase}${S.mission.pin && N.pose ? ` · ${roomDist(N.pose, S.mission.pin).toFixed(1)} m` : ""}` : S.back ? `going back (${S.back.i + 1}/${S.back.steps.length})` :
+  $("next").textContent = S.mission ? `${S.mission.room}: ${S.mission.phase}${S.mission.slam && S.mission.target && N.pose ? ` · ${roomDist(N.pose, S.mission.target).toFixed(1)} m` : S.mission.pin && N.pose ? ` · ${roomDist(N.pose, S.mission.pin).toFixed(1)} m` : ""}` : S.back ? `going back (${S.back.i + 1}/${S.back.steps.length})` :
     st && S.pos ? `${st.turn} in ${Math.round(dist(S.pos, st))} m` : "no route";
 }
 async function checkServer() {

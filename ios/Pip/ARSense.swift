@@ -12,6 +12,8 @@ final class ARSense: NSObject, ARSessionDelegate {
     static var supported: Bool { ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) }
 
     let session = ARSession()
+    let map = SlamMap()
+    private var lastMap = Date.distantPast
     private let ci = CIContext()
     private let lock = NSLock()
     private var _jpeg: Data?, _depth: Depth?, _pose: Pose?, _tracking = "starting"
@@ -27,6 +29,10 @@ final class ARSense: NSObject, ARSessionDelegate {
         let cfg = ARWorldTrackingConfiguration()
         cfg.frameSemantics = [.sceneDepth, .smoothedSceneDepth]
         cfg.worldAlignment = .gravity
+        cfg.planeDetection = [.horizontal, .vertical]        // floor + walls + DOORS (plane classification)
+        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) {
+            cfg.sceneReconstruction = .meshWithClassification
+        }
         session.delegate = self
         session.run(cfg)
     }
@@ -55,12 +61,20 @@ final class ARSense: NSObject, ARSessionDelegate {
             lastDepth = now
             d = sectors(sd.depthMap)
         }
+        if now.timeIntervalSince(lastMap) > 0.2, case .normal = frame.camera.trackingState {
+            lastMap = now
+            map.integrate(frame: frame)                       // grow the floor map from LiDAR
+        }
         lock.lock()
         _pose = pose; _tracking = state; lastFrame = frame
         if let jpegData { _jpeg = jpegData }
         if let d { _depth = d }
         lock.unlock()
     }
+
+    func session(_ session: ARSession, didAdd anchors: [ARAnchor]) { map.update(anchors: anchors) }
+    func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) { map.update(anchors: anchors) }
+    func session(_ session: ARSession, didRemove anchors: [ARAnchor]) { map.remove(anchors: anchors) }
 
     private func encode(_ px: CVPixelBuffer) -> Data? {
         var img = CIImage(cvPixelBuffer: px).oriented(.right)        // sensor is landscape; phone is held upright

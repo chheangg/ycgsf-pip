@@ -21,6 +21,7 @@ final class Sensors: NSObject, ObservableObject, CLLocationManagerDelegate {
     private(set) var gps: CLLocation?
     private var gpsOn = false
     private var walkedOffset: Double = 0
+    private var mapTick = 0
 
     override init() {
         super.init()
@@ -91,6 +92,12 @@ final class Sensors: NSObject, ObservableObject, CLLocationManagerDelegate {
             out["depth"] = ["left": d.left, "ahead": d.center, "right": d.right, "nearest": d.nearest]
             depthAhead = d.center
         }
+        if useAR, mapTick % 3 == 0 {                       // the floor map's real doors and unexplored edges (~1.5/s)
+            out["doors"] = ar.map.doorList().map { ["x": $0.x, "z": $0.z, "w": $0.width, "id": $0.id.uuidString] }
+            out["frontiers"] = ar.map.frontiers().map { ["x": $0.x, "z": $0.z, "size": $0.size] }
+            out["mapped_m2"] = Double(ar.map.knownCells) * 0.01
+        }
+        mapTick += 1
         if let g = gps {
             out["gps"] = ["lat": g.coordinate.latitude, "lon": g.coordinate.longitude, "acc": g.horizontalAccuracy]
         }

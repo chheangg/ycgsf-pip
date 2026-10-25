@@ -66,6 +66,18 @@ struct PipWebView: UIViewRepresentable {
                 } else {
                     js("window.pipNative && window.pipNative.pinned(\(id), null)")
                 }
+            case "path":
+                // A* on the floor map from where the phone is to (x, z): waypoints in meters.
+                let id = body["id"] as? Int ?? 0
+                guard sensors.useAR, let p = sensors.ar.pose, let x = body["x"] as? Double, let z = body["z"] as? Double else {
+                    js("window.pipNative && window.pipNative.pinned(\(id), null)"); break
+                }
+                let map = sensors.ar.map
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let pts = map.path(from: SIMD2(p.x, p.z), to: SIMD2(Float(x), Float(z)))
+                    let json = pts.map { "[" + $0.map { "{\"x\":\($0.x),\"z\":\($0.y)}" }.joined(separator: ",") + "]" } ?? "null"
+                    DispatchQueue.main.async { self.js("window.pipNative && window.pipNative.pinned(\(id), \(json))") }
+                }
             case "gps":
                 sensors.startGPS()
             case "speaking":
