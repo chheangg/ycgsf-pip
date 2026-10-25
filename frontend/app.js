@@ -347,6 +347,23 @@ async function lookAround(why) {
   } catch (e) { log("look around failed", e); m.via = "door"; m.phase = "scan"; m.phaseAt = Date.now(); say("Turn slowly, I'm looking for a door."); }
   finally { if (S.mission) S.mission.planning = false; }
 }
+// While walking toward a landmark: if something is actually in the way, stop and re-decide.
+async function obstacleCheck(m) {
+  m.obstacleCheckAt = Date.now();
+  try {
+    const fd = new FormData(); fd.append("image", lastFrame, "f.jpg");
+    const r = await (await fetch(SERVER + "/local", { method: "POST", body: fd })).json();
+    if (!S.mission || S.mission.phase !== "approach") return;
+    const blocker = r.hazards.find((h) => h.near && h.side === "ahead");
+    // the landmark itself filling the view isn't an obstacle; only stop if the target is still small/far
+    if ((blocker || r.hint === "stop") && (m.door?.size || 0) < 0.2) {
+      say(`Stop. ${blocker ? `There's a ${blocker.label} in the way.` : "Something's in the way."}`, { urgent: true });
+      m.blockedCount = (m.blockedCount || 0) + 1;
+      if (m.blockedCount >= 2) { m.blockedCount = 0; lookAround(`blocked by ${blocker?.label || "an obstacle"} on the way to the ${m.target || m.via}`); }
+    } else m.blockedCount = 0;
+  } catch {}
+}
+
 // Guide the camera (and the hand behind it) onto the door handle, then say where to reach.
 async function handleStep(m, blob) {
   const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("target", "door handle");
@@ -506,6 +523,8 @@ async function missionStep(blob) {
   // Proof of the room beats everything: that's the only way to finish. But detectors confuse doors with
   // showers or sinks, so a room needs the vision model to agree we're INSIDE it first.
   const isRoomGoal = !m.proof.includes(m.room);
+  const atDecisionPoint = ["verify", "through", "door", "arrive"].includes(m.phase) || (!isRoomGoal && proof?.size > 0.15);
+  if (!atDecisionPoint) proof = null;     // don't decide from across the room
   if (proof && isRoomGoal && !m.roomOk) {
     if (t > (m.roomMuteUntil || 0) && !m.roomChecking) {
       m.roomChecking = true;
@@ -532,11 +551,11 @@ async function missionStep(blob) {
   switch (m.phase) {
     case "scan":
       if (seeDoor) return mPhase("orient", `There, I see the ${m.target || m.via}.`);
-      if (since > 18000) { m.tries++; return lookAround(`couldn't find the ${m.via} after turning`); }
+      if (since > 40000) { m.tries++; return lookAround(`couldn't find the ${m.via} after turning all the way`); }
       if (since > 3000 && t - (m.wallCheckAt || 0) > 4000) wallCheck(m);   // facing a wall? say so and turn
       return;
     case "orient": {
-      if (!seeDoor && since > 2500) { m.dxs = null; m.centered = false; return mPhase("scan", `Lost it. Turn slowly.`); }
+      if (!seeDoor && since > 2500) { m.dxs = null; m.centered = false; return mPhase("scan", `Turn slowly until I find it again.`); }
       if (!seeDoor) return;
       const dir = track(m, m.door);
       if (dir !== "center") { m.gotTapped = false; if (dir !== m.lastDir) { m.lastDir = dir; mSay(`${dir} ${dir}`, 0); } else mSay(`${dir} ${dir}`, 5000); return; }
@@ -555,11 +574,9 @@ async function missionStep(blob) {
       return;
     }
     case "approach":
-      if (seeDoor) {
-        if (!m.bestSize || m.door.size > m.bestSize * 1.2) { m.bestSize = m.door.size; m.bestAt = t; }
-        else if (t - (m.bestAt || t) > 15000) { m.bestSize = 0; return lookAround("not getting any closer"); }
-      }
-      if (!seeDoor && since > 4000) return lookAround(`lost sight of the ${m.via} while walking`);
+      if (t - (m.obstacleCheckAt || 0) > 1500) obstacleCheck(m);        // decision point 1: something in the way
+      if (!seeDoor && t - m.doorAt > 4000) { m.dxs = null; m.centered = false;    // keep the plan: just find it again
+        return mPhase("scan", "Stop for a second. Turn slowly until I find it again."); }
       if (seeDoor && m.door.size > 0.3) {
         endLeg(m, /door/.test(m.via) ? 3 : 0);                              // +3 s for walking through a door
         if (/door/.test(m.via)) return doorStep(m);                            // a door has to be opened first
