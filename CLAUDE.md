@@ -43,7 +43,7 @@ Shared components: Status Bar, Key, Talk, Talk · On, Deafen, Deafen · On, Voic
 
 The phone records every app launch as one trip, and uploads it to the 4090 PC every 30 s and when the app leaves the screen. No cable or phone is needed to read it, from any Mac on the team's Tailscale with SSH access to `hackteam@100.71.218.127` (needs your SSH key in the PC's `authorized_keys`).
 
-- **Get it:** `tools/pull_trip.sh` copies the newest trip into `trips/<trip>/` (git-ignored) and writes its report. `tools/pull_trip.sh list` shows all trips; `tools/pull_trip.sh <trip>` gets one.
+- **Get it:** `tools/pull_trip.sh` copies the newest trip that has data into `trips/<trip>/` (git-ignored) and writes its report, in a few seconds. It brings the trace, the floor maps and only the photos around each MARK. `tools/pull_trip.sh list` shows all trips with their size; `tools/pull_trip.sh <trip>` gets one; add `--photos` for every photo (about 1 minute per 10 minutes walked, because the PC is reached through a Tailscale relay).
 - **Read the report first:** `trips/<trip>/report/timeline.txt` (marks at the top, then what was heard, said, logged and decided, with the position every 2 s), `map.png` (floor map and the whole walk) and `mark-<n>.png` (the map, path, heading and Pip's plan at each mark). Open the PNGs with Read.
 - **Zoom in:** `python3 tools/trip_report.py trips/<trip> --at <seconds>` prints every recorded line from 10 s before to 10 s after.
 - **Marks:** the user says "mark that" or "that was wrong" (holding Hold to talk) when something goes wrong. It's logged as `MARK <what they said>` about 1 s after the moment. Start the diagnosis at the marks.

@@ -7,6 +7,7 @@ Get one with tools/pull_trip.sh.
 
 Run:  python3 tools/trip_report.py trips/<trip>              timeline + pictures in trips/<trip>/report/
       python3 tools/trip_report.py trips/<trip> --at 312     every recorded line from 302 s to 322 s
+      ... | python3 tools/trip_report.py trips/<trip> --mark-photos   which of these photos were taken around a MARK
 
 Writes to <trip>/report/:
   timeline.txt  marks first, then what was heard, said, logged and decided, with the position every 2 s
@@ -19,6 +20,7 @@ import json
 import math
 import re
 import struct
+import sys
 import zlib
 from pathlib import Path
 
@@ -161,6 +163,7 @@ def main():
     ap = argparse.ArgumentParser(description="Turn one trip recording into a timeline and floor map pictures.")
     ap.add_argument("trip", type=Path)
     ap.add_argument("--at", type=float, help="seconds since the trip started: print every line from 10 s before to 10 s after")
+    ap.add_argument("--mark-photos", action="store_true", help="read photo file names on stdin, print the ones taken around a MARK")
     args = ap.parse_args()
     events = load(args.trip)
     if not events:
@@ -170,6 +173,13 @@ def main():
         for e in events:
             if abs(e["t"] - t0 - args.at) <= 10:
                 print(f"{e['t'] - t0:7.1f}s  {json.dumps({k: v for k, v in e.items() if k != 't'})}")
+        return
+    if args.mark_photos:
+        # Photos come every 2 s and a MARK is logged ~1 s after the moment, so 6 s before to 2 s after covers it.
+        for name in sys.stdin.read().split():
+            t = float(name.rsplit(".", 1)[0]) if re.fullmatch(r"\d+\.\d\.jpg", name) else None
+            if t and any(-6 <= t - m["t"] <= 2 for m in marks_of(events)):
+                print(name)
         return
 
     out = args.trip / "report"
