@@ -35,6 +35,8 @@
 	<string>Pip listens so you can talk to it.</string>
 	<key>NSMotionUsageDescription</key>
 	<string>Pip measures your turns and steps to guide you and walk you back.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Pip saves demo recordings of its screen to your photos.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchScreen</key>

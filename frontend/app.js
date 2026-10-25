@@ -985,7 +985,7 @@ async function aroundCheck(w, said = false) {
     }
     if (S.walk !== w || !dd) return;
     if (said && dd.ahead >= BLOCKED_M && !what) return say("I don't see anything right in front of you. Try a step forward slowly, I'll warn you.");
-    w.blocks = (w.blocks || 0) + 1;
+    w.blocks = (w.blocks || 0) + 1; obstacleSeen(what);
     const name = what ? `There's a ${what} ahead` : dd.left < 1.5 && dd.right < 1.5 ? "There's a wall ahead" : "Something's in the way";
     const goal = w.blocks < 3 ? routeAhead(w) : null;
     const pts = goal ? await askNative({ type: "path", x: goal.x, z: goal.z }) : null;   // A* on the live map, around what LiDAR has seen
@@ -1067,6 +1067,7 @@ async function pathCheck(w) {
     if (!agree && r.ahead !== "blocked") return;
     if (r.ahead === "blocked_soon") {   // across the path 3-15 m ahead: warn now, while there's room to choose
       const named = r.what && r.what !== "none" ? r.what : "something";
+      obstacleSeen(named);
       if (r.path === "left" || r.path === "right") { w.bias = r.path === "left" ? -PATH_BIAS_DEG : PATH_BIAS_DEG; w.biasUntil = t + PATH_BIAS_MS; }
       if (t - (w.soonSaidAt || 0) > PATH_BIAS_MS) {
         w.soonSaidAt = t;
@@ -1156,7 +1157,7 @@ function hazardCheck() {
   }
   const a = N.depth.ahead;
   if (forward < 0.25 || turning > 30 || a > 0.7 || now - hazardSaidAt < 8000) return;
-  hazardSaidAt = now; S.hazardAt = now;
+  hazardSaidAt = now; S.hazardAt = now; obstacleSeen();
   say(a < 0.45 ? "Stop. Something right in front of you." : "Careful, something in front of you.", { urgent: a < 0.45 });
 }
 
@@ -1776,7 +1777,7 @@ async function obstacleCheck(m) {
         } catch (e) { log("door check failed", e.message); }
         finally { m.doorBusy = false; }
       }
-      const side = N.depth.left > N.depth.right ? "left" : "right";
+      const side = N.depth.left > N.depth.right ? "left" : "right"; obstacleSeen();
       say(`Stop. Something's ${N.depth.ahead.toFixed(1)} meters ahead. There's more room on your ${side}.`, { urgent: true });
       m.blockedCount = (m.blockedCount || 0) + 1;
       if (m.blockedCount >= 3) {   // LiDAR phone: map this spot again (not the camera look-around, that's for phones without it)
@@ -2191,6 +2192,39 @@ async function findStep(blob) {
 // ---------- camera -> local planner (obstacles) ----------
 let video, canvas, busy = false, lastFrame = null, hazardSaidAt = 0, camOn = null;
 // Camera only when asked: find something, describe, or active guidance. Not while just talking.
+// ---------- demo view (recorded demos): what the camera and detector see, which model is thinking ----------
+const DEMO_CALLS = { "/talk": "brain", "/decide_slam": "brain · map", "/path_ahead": "vision · path ahead", "/panorama": "vision · looking around",
+  "/door": "vision · door", "/check_room": "vision · room", "/confirm": "vision · second look", "/replan": "vision · plan", "/describe": "vision · describe" };
+S.demo = (() => { try { return (localStorage.getItem("pip.demo") ?? "1") === "1"; } catch { return true; } })();
+S.calls = new Map();   // model calls in flight -> their label, for the demo's "thinking" chip
+const fetchRaw = window.fetch.bind(window);
+window.fetch = (url, opts) => {
+  const label = DEMO_CALLS[String(url).replace(SERVER, "").split("?")[0]];
+  if (!label) return fetchRaw(url, opts);
+  const k = {}; S.calls.set(k, label);
+  return fetchRaw(url, opts).finally(() => S.calls.delete(k));
+};
+function demoToggle() {
+  S.demo = !S.demo;
+  try { localStorage.setItem("pip.demo", S.demo ? "1" : "0"); } catch (e) { log("demo setting not saved:", e.message); }
+  if (S.demo && started) ensureCamera();
+  log("demo view", S.demo ? "on" : "off");
+}
+let cloudAt = 0, cloudBusy = false;
+function pollCloud() {   // the LiDAR points for the demo's 3D view, ~7 times a second while it's open
+  if (cloudBusy || Date.now() - cloudAt < 150) return;
+  cloudBusy = true; cloudAt = Date.now();
+  askNative({ type: "cloud" }, 800).then((p) => { if (p?.length) S.cloud = p; }).finally(() => { cloudBusy = false; });
+}
+function obstacleSeen(what) { S.obstacleAt = Date.now(); if (what) S.obstacleWhat = what; }   // opens the demo's 3D view
+async function demoRecord() {   // ReplayKit on the phone: the screen and Pip's sound, saved to Photos
+  const on = !S.recording;
+  const r = await askNative({ type: "record", on }, on ? 15000 : 30000);
+  if (!r?.ok) return log("recording", on ? "start" : "stop", "failed:", r?.error || "no answer");
+  S.recording = on; S.recordAt = Date.now();
+  log(on ? "recording started" : "recording saved to Photos");
+  if (!on) say("Saved the recording to Photos.");
+}
 function ensureCamera() {
   if (!camOn) camOn = (NATIVE ? Promise.resolve() : startCamera()).then(() => { S.camFail = null; return localLoop(); }).catch((e) => { log("camera:", e.message); camOn = null; S.camFail = e.message; });   // LOOK and FIND show "No camera"
   return camOn;
@@ -2218,8 +2252,9 @@ async function frameBlob() {
   return new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.7));
 }
 async function localLoop() {
-  if (!busy && !S.paused && (S.find || guiding())) {
+  if (!busy && !S.paused && (S.find || guiding() || S.demo)) {
     const blob = await frameBlob();
+    if (blob && S.demo) S.demoBlob = blob;
     if (blob && S.mission) {
       busy = true; lastFrame = blob;
       try {
@@ -2237,6 +2272,7 @@ async function localLoop() {
       try {
         const r = await (await fetch(SERVER + "/local", { method: "POST", body: fd })).json();
         S.clear = r.clear; S.hint = guiding() ? r.hint : "clear"; S.hazards = r.hazards;
+        S.demoBoxes = { boxes: r.boxes || [], at: Date.now() };
         if (S.seg) S.seg.landmarks.push(...r.landmarks);
         const near = r.hazards.find((h) => h.near && h.side === "ahead");
         if (near && !NATIVE && guiding() && !S.learning && Date.now() - hazardSaidAt > 6000) { hazardSaidAt = Date.now(); say(`Careful, ${near.label} ahead.`, { urgent: true }); }
@@ -2463,6 +2499,7 @@ async function start() {
   $("start").remove();
   say(NATIVE ? "Hi, I'm Pip. To talk to me, hold the bar at the bottom of the screen." : "Hi, I'm Pip. To talk to me, hold space.");
   checkServer(); setInterval(checkServer, 15000);
+  if (S.demo) ensureCamera();
   fetch(SERVER + "/warmup", { method: "POST" }).then(() => checkServer()).catch(() => {});
   startSegment();   // GPS and camera stay off until the conversation needs them
   if (qs.get("lat") && qs.get("lon")) {   // desk demo: start here and walk with W/A/F
