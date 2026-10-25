@@ -31,6 +31,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 from pydantic import BaseModel
 
+from . import walmart
+
 log = logging.getLogger("ycgsf")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -399,6 +401,10 @@ How you work:
 - Small tasks need no plan. Call the tool immediately in the same turn:
   "find my keys / the remote / a chair" -> find_object; "what's around me" -> describe_surroundings;
   "go back" -> go_back; "pause/resume/repeat/stop" -> control.
+- WALMART AISLE LOOKUP: use get_walmart_location only with numeric US store and item IDs the user supplied
+  or a previously verified result. Ask for either missing ID; never guess a store from GPS. One lookup per
+  turn, no retries. Report the verified aisle, store and item; a missing aisle is not a stock conclusion.
+  Shelf labels are not walking routes. Do not start navigation for a Walmart aisle question.
 - Only use tools when the request needs one. Small talk and questions about you get a plain reply.
 - Never say "let me check" or "I'll look" without calling the tool in that same turn.
 - TAUGHT ROUTES: the status lists them in taught_routes. If that list is empty, you know NO routes:
@@ -480,6 +486,11 @@ TOOLS = [{"type": "function", "function": f} for f in [
      "parameters": {"type": "object", "properties": {}}},
     {"name": "control", "description": "pause, resume, repeat the last instruction, or stop the current guidance.",
      "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["pause", "resume", "repeat", "stop"]}}, "required": ["action"]}},
+    {"name": "get_walmart_location", "description": "Get a verified Walmart aisle for a known US store number and item ID. Ask for missing IDs. No navigation or stock status.",
+     "parameters": {"type": "object", "properties": {
+         "store_no": {"type": "string", "description": "Numeric Walmart store number explicitly supplied by the user"},
+         "item_id": {"type": "string", "description": "Numeric Walmart US item ID supplied by the user"}},
+         "required": ["store_no", "item_id"]}},
 ]]
 
 # Whisper writes store names in lowercase ("find me the target at UCSD"), and the brain then reads a plain word.
@@ -606,8 +617,38 @@ def get_route(sess: dict, ctx: dict, place_id: str) -> dict:
             "first": f"go {steps[0]['meters']} m, then {first['turn']}" if first["turn"] in ("left", "right") else f"go straight {total} m"}
 
 
+def lookup_walmart(sess: dict, args: dict) -> dict:
+    if not isinstance(args, dict):
+        return {"error": "Tool arguments must be an object"}
+    previous = sess.get("walmart") or {}
+    user_text = " ".join([sess.get("heard", ""), *(m.get("content", "") for m in sess.get("history", [])
+                                               if m.get("role") == "user")])
+    supplied_ids = set(re.findall(r"\b[0-9]+\b", user_text))
+    for field in ("store_no", "item_id"):
+        value = args.get(field)
+        if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]*", value):
+            return {"error": "invalid_" + field, "note": "Ask the user for the numeric Walmart " + field + "."}
+        if value not in supplied_ids and value != previous.get(field):
+            return {"error": "unverified_" + field, "note": "Ask the user for the Walmart " + field + "; do not guess."}
+    api_key = os.environ.get("SERPAPI_API_KEY")
+    if not api_key:
+        return {"error": "lookup_not_configured", "note": "Walmart lookup is unavailable on this server."}
+    if sess.get("walmart_calls", 0):
+        return {"error": "Walmart lookup limit reached for this turn; use the result already returned."}
+    sess["walmart_calls"] = 1
+    try:
+        result = walmart.fetch_location(args["store_no"], args["item_id"], api_key)
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+        log.warning("Walmart lookup failed or returned invalid data")
+        return {"error": "lookup_failed", "note": "No verified result; do not retry this turn."}
+    sess["walmart"] = result
+    return result
+
+
 def run_tool(sess: dict, ctx: dict, name: str, args: dict) -> tuple[dict, dict | None]:
     """-> (result for the model, action for the app or None)."""
+    if name == "get_walmart_location":
+        return lookup_walmart(sess, args), None
     if name in ("find_places", "get_route", "start_navigation", "where_am_i") and not sess.get("outside"):
         return {"error": "The user hasn't said they're outside, so they're indoors (home). Maps and GPS are off. "
                          "Use taught routes (list_saved_places / follow_saved_route) or the camera (find_object)."}, None
@@ -707,8 +748,12 @@ def agent(session: str, heard: str, ctx: dict) -> dict:
     """One user turn: up to 5 tool calls, then a short spoken reply (+ an action for the app)."""
     sess = _sessions.setdefault(session, {"history": [], "places": {}, "routes": {}})
     sess["heard"] = heard
+    walmart_lookup = bool(re.search(r"\bwalmart\b", heard, re.I) and
+                          re.search(r"\b(aisle|shelf|item|product|store\s+(?:number|no\.?|#?\d+))\b", heard, re.I))
+    sess["walmart_calls"] = 0
     status = {k: ctx.get(k) for k in ("gps", "gps_accuracy_m", "heading", "navigating_to", "next_turn",
                                       "saved_spots", "taught_routes", "hazards", "learning", "trip", "remaining_m")}
+    status["walmart"] = sess.get("walmart")
     if ctx.get("always_on"):   # the mic hears everything: let the model skip speech that isn't for it
         heard_note = ("\nYou're always listening, so you also hear the user talking to other people, the TV, or "
                       "themselves. If this speech is clearly not meant for you, reply exactly IGNORE and call no tools. "
@@ -716,7 +761,7 @@ def agent(session: str, heard: str, ctx: dict) -> dict:
     else:
         heard_note = ""
     # Maps/GPS unlock only when the user names a location or says they're outside. A room never does.
-    if names_a_location(heard):
+    if not walmart_lookup and names_a_location(heard):
         sess["outside"] = True
     routes = status.get("taught_routes") or []
     known = (f"Taught routes you know: {', '.join(routes)}." if routes
@@ -736,14 +781,14 @@ def agent(session: str, heard: str, ctx: dict) -> dict:
             if not used and not nudged and ((not say.rstrip().endswith("?") and
                     re.search(r"\b(start|starting|guid|recording|let'?s go|on it|find|finding|look|looking|check|checking|search|"
                               r"take you|get you|route|navigat|on the way|let me|i'?ll)", say, re.I)
-                    ) or (names_a_location(heard) and not heard.startswith("(app)"))):
+                    ) or (names_a_location(heard) and not walmart_lookup and not heard.startswith("(app)"))):
                 nudged = True   # said it's doing something but called nothing: make it actually call the tool
                 msgs += [{"role": "assistant", "content": say},
-                         {"role": "user", "content": "(system) No tool was called. Call the right tool now (a named place: find_places "
+                         {"role": "user", "content": "(system) No tool was called. For a Walmart aisle, use get_walmart_location. Otherwise call the right tool now (a named place: find_places "
                                                      "with category 'named', then get_route, then say the plan and ask)."}]
                 continue
-            if (not nudged and names_a_location(heard) and not heard.startswith("(app)") and used
-                    and not any(u["tool"] in ("find_places", "get_route", "start_navigation", "leave_here") for u in used)):
+            if (not nudged and not walmart_lookup and names_a_location(heard) and not heard.startswith("(app)") and used
+                    and not any(u["tool"] in ("find_places", "get_route", "start_navigation", "leave_here", "get_walmart_location") for u in used)):
                 nudged = True; action = None   # e.g. where_am_i for "find me the Target at UCSD"
                 msgs += [{"role": "assistant", "content": say},
                          {"role": "user", "content": "(system) They named a place to go. Call find_places with category 'named' and that name now."}]
