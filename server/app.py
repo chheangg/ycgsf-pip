@@ -529,13 +529,19 @@ def find_places(sess: dict, ctx: dict, category: str, name: str | None = None) -
     pos = ctx.get("pos")
     if not pos:
         sess["gps_wanted"] = True
-        return {"error": "GPS was off; the app is turning it on now. Tell the user you're getting their location "
-                         "and to ask again in a few seconds."}
+        return {"error": "GPS was off; the app is turning it on now and will repeat this request by itself once it "
+                         "has a position. Tell the user you're getting their location, in a few words."}
     me = LatLon(**pos)
     found = []
     try:
         if category == "named" and name:
-            hit = geocode(name, me)
+            # "Target store at UCSD" finds nothing on the map; "Target" (searched near the user) does.
+            short = re.sub(r"\s+\b(at|near|by|in|on)\b.*$", "", name, flags=re.I).strip()
+            plain = re.sub(r"\b(the|store|shop|building|place)\b", "", short, flags=re.I).strip()
+            hit = None
+            for q in dict.fromkeys([name, short, plain]):
+                if q and not hit:
+                    hit = geocode(q, me)
             if hit:
                 found.append({"name": hit[1], "lat": hit[0].lat, "lon": hit[0].lon})
         elif category in CATEGORIES:
@@ -600,7 +606,8 @@ def run_tool(sess: dict, ctx: dict, name: str, args: dict) -> tuple[dict, dict |
     if name == "get_route":
         return get_route(sess, ctx, args.get("place_id", "")), None
     if name == "start_navigation":
-        r = sess["routes"].get(args.get("place_id", ""))
+        # The brain often passes a name or a stale id on "yes": the route it just planned is the one they agreed to.
+        r = sess["routes"].get(args.get("place_id", "")) or (list(sess["routes"].values())[-1] if sess["routes"] else None)
         if not r:
             return {"error": "call get_route first"}, None
         return {"ok": True, "started": r["name"]}, {"type": "navigate", "route": r}
@@ -686,10 +693,15 @@ def agent(session: str, heard: str, ctx: dict) -> dict:
         calls = m.get("tool_calls") or []
         if not calls:
             say = re.sub(r"<think>.*?</think>", "", m.get("content") or "", flags=re.S).strip()
-            if not used and not nudged and re.search(r"\b(start|starting|guid|recording|let'?s go|on it)", say, re.I):
+            # Said it's doing something, or the user named a place, but no tool ran: make it actually call one.
+            if not used and not nudged and ((not say.rstrip().endswith("?") and
+                    re.search(r"\b(start|starting|guid|recording|let'?s go|on it|find|finding|look|looking|check|checking|search|"
+                              r"take you|get you|route|navigat|on the way|let me|i'?ll)", say, re.I)
+                    ) or (names_a_location(heard) and not heard.startswith("(app)"))):
                 nudged = True   # said it's doing something but called nothing: make it actually call the tool
                 msgs += [{"role": "assistant", "content": say},
-                         {"role": "user", "content": "(system) You said that but called no tool. Call the right tool now."}]
+                         {"role": "user", "content": "(system) No tool was called. Call the right tool now (a named place: find_places "
+                                                     "with category 'named', then get_route, then say the plan and ask)."}]
                 continue
             if report_open and not used and not nudged and not say.rstrip().endswith("?"):
                 nudged = True

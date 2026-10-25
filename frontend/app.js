@@ -216,6 +216,7 @@ function onFix(p, acc, real = true) {
   }
   if (!S.pos || dist(S.pos, p) >= 4) S.pos = p;
   S.acc = acc; S.fixAt = now; S.fix = { lat: p.lat, lon: p.lon, acc, t: now };
+  if (S.askAfterFix && acc <= 100) { const q = S.askAfterFix; S.askAfterFix = null; if (now < q.until) { log("GPS ready, asking again:", q.text); askPip({ text: q.text }); } }
   if (!NATIVE) learnTick();   // the phone calls it from its sensor updates
   const wasOk = S.gpsOk;
   S.gpsOk = acc <= 60;
@@ -2051,22 +2052,22 @@ async function act(r) {
   if (S.learning && a?.type === "learn_start") return say(`I'm still recording the way to ${S.learning.name}. You lead: walk there yourself, and say "we're here" when you arrive.`);
   if (S.learning && !a && DIRECTION_Q.test(heard)) return say(`This time you lead, and I remember the way. Walk to ${S.learning.name}, and say "we're here" when you arrive.`);
   if (!a && (S.walk || S.back) && DIRECTION_Q.test(heard)) return say(currentDirection());   // the route knows; the brain would guess
-  if (a && r.say && ["replay", "learn_start", "learn_end", "mission", "find", "leave"].includes(a.type)) return act({ ...r, say: null, heard: "" });   // these speak for themselves
+  if (a && r.say && ["replay", "learn_start", "learn_end", "mission", "find", "leave", "navigate"].includes(a.type)) return act({ ...r, say: null, heard: "" });   // these speak for themselves
   if (r.say && !a && r.say === lastBrainSay && Date.now() - lastBrainAt < 60000) say("Okay.");      // don't repeat the same line
   else if (r.say) say(r.say);
   if (r.say) { lastBrainSay = r.say; lastBrainAt = Date.now(); }
   if (!a) return;
   switch (a.type) {
     case "navigate": {   // the route takes over; coming out of a building they already agreed, so it starts at once
-      const fromTrip = Boolean(S.trip); S.trip = null;
-      return gpsWalk(a.route.name, a.route.to, a.route.steps, true, { go: fromTrip, placeId: a.route.place_id });
+      S.trip = null;   // the brain only starts a route after they said yes: don't ask a second time
+      return gpsWalk(a.route.name, a.route.to, a.route.steps, true, { go: true, placeId: a.route.place_id });
     }
     case "find": return findStart(a.target);   // the app says it (the brain once said "I found it" before looking)
     case "mission": return missionStart(a.room, a.via, a.proof);
     case "leave": return leaveStart({ goal: a.goal, outside: a.outside ?? null,
                                       dest: a.to ? { name: a.name || a.goal, to: a.to, steps: a.steps, placeId: a.place_id } : S.trip?.dest || null });
     case "describe": return describe("What's around me?", false);
-    case "gps_on": ensureGPS(); return;
+    case "gps_on": ensureGPS(); if (heard) S.askAfterFix = { text: heard, until: Date.now() + 25000 }; return;   // asked before GPS was on: ask again once it is
     case "look": { const r = await lookAndPlan(a.goal || "where I want to go"); if (r) say(r.plan.say); return; }
     case "where": return whereAmI();
     case "back": return goBack(a.label);
