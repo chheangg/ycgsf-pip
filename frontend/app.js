@@ -9,6 +9,33 @@ const SERVER = (qs.get("server") || localStorage.getItem("ycgsf.server") || "htt
 $("srv").value = SERVER;
 $("srv").onchange = (e) => { localStorage.setItem("ycgsf.server", e.target.value); location.reload(); };
 const SESSION = Math.random().toString(36).slice(2);
+// Running inside the iPhone app: sensors come from the phone (0.5x / ARKit camera, LiDAR, gyro, steps, GPS, mic).
+const NATIVE = Boolean(window.PIP_NATIVE && window.webkit?.messageHandlers?.pip);
+const toNative = (m) => NATIVE && window.webkit.messageHandlers.pip.postMessage(m);
+const nativeWaits = new Map(); let nativeId = 0;
+const askNative = (msg) => new Promise((res) => { const id = ++nativeId; nativeWaits.set(id, res); toNative({ ...msg, id });
+                                                  setTimeout(() => { if (nativeWaits.delete(id)) res(null); }, 1500); });
+const N = { heading: null, pose: null, depth: null, distance: 0, camera: "" };   // latest phone sensor snapshot
+window.pipNative = {
+  update(snap) {
+    N.heading = snap.heading; N.pose = snap.pose || null; N.depth = snap.depth || null; N.distance = snap.distance_m || 0; N.camera = snap.camera;
+    S.heading = snap.heading;
+    if (snap.gps) onFix({ lat: snap.gps.lat, lon: snap.gps.lon }, snap.gps.acc);
+    if (N.depth && $("clear") && !S.mission && !S.find) $("clear").textContent = `ahead ${N.depth.ahead.toFixed(1)} m`;
+  },
+  frame(id, b64) { const r = nativeWaits.get(id); nativeWaits.delete(id); r?.(b64 || null); },
+  pinned(id, p) { const r = nativeWaits.get(id); nativeWaits.delete(id); r?.(p); },
+  phrase(b64) {
+    if (!started) return;
+    const bin = atob(b64), buf = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+    if (listenMode !== "push") askPip({ body: buf.buffer, wake: listenMode === "always" ? "always" : "1" });
+  },
+};
+const b64ToBlob = (b64) => { const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Blob([u], { type: "image/jpeg" }); };
+// Geometry on the room floor (ARKit meters): bearing from the user to a pinned point, clockwise degrees.
+const roomBearing = (from, to) => (Math.atan2(to.x - from.x, -(to.z - from.z)) * 180 / Math.PI + 360) % 360;
+const roomDist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 const routesStore = () => { try { return JSON.parse(localStorage.getItem("pip.routes") || "{}"); } catch { return {}; } };
 const log = (...a) => { const el = $("log"); el.textContent = `${new Date().toLocaleTimeString()} ${a.join(" ")}\n` + el.textContent.slice(0, 4000); };
 
@@ -93,10 +120,10 @@ function say(text, { urgent = false } = {}) {
   playLine(text);
 }
 async function playLine(text) {
-  voiceBusy = true; const gen = voiceGen;
+  voiceBusy = true; const gen = voiceGen; toNative({ type: "speaking", on: true });
   try { await speakNow(text, gen); } catch {}
   if (gen !== voiceGen) return;            // an urgent line took over
-  voiceBusy = false;
+  voiceBusy = false; setTimeout(() => !voiceBusy && toNative({ type: "speaking", on: false }), 300);
   if (pendingLine) { const next = pendingLine; pendingLine = null; playLine(next); }
 }
 async function speakNow(text, gen = voiceGen) {
@@ -144,7 +171,7 @@ function onFix(p, acc, real = true) {
   render(); followRoute();
 }
 let gpsOn = false;
-function ensureGPS() { if (!gpsOn) { gpsOn = true; startGPS(); } }   // only when the conversation needs it
+function ensureGPS() { if (!gpsOn) { gpsOn = true; NATIVE ? toNative({ type: "gps" }) : startGPS(); } }   // only when needed
 function startGPS() {
   if (!navigator.geolocation) return log("no geolocation");
   navigator.geolocation.watchPosition(
@@ -286,6 +313,19 @@ function replay(name) {
 
 // ---------- GO TO A ROOM: door -> line up -> walk -> through -> verify (done only on proof) ----------
 const sideOf = (dx) => (dx < 0 ? "left" : "right");
+// Walking toward a pinned spot in the room (ARKit): taps on the side to turn toward when off course,
+// quiet when heading the right way. Works even when the landmark is out of the camera's view.
+function walkToCue(target) {
+  if (!N.pose || N.heading == null) return null;
+  const off = ((roomBearing(N.pose, target) - N.heading + 540) % 360) - 180;
+  return Math.abs(off) > 25 ? { side: off < 0 ? "left" : "right", interval: 1.0, kind: "tap" } : null;
+}
+async function pinLandmark(m, hit) {
+  if (!NATIVE || !N.pose) return;
+  const p = await askNative({ type: "pin", u: 0.5 + hit.dx, v: 0.5 + (hit.dy || 0) });
+  if (p && S.mission === m) { m.pin = { x: p.x, z: p.z }; log(`pinned ${m.via} at ${p.d.toFixed(1)} m`); }
+}
+
 // Detector boxes jitter frame to frame: smooth the position, and use a dead zone so "centered" can't flip-flop.
 function track(m, hit) {
   m.dxs = m.dxs == null ? hit.dx : 0.55 * m.dxs + 0.45 * hit.dx;
@@ -315,10 +355,20 @@ async function lookAround(why) {
   say(m.history.length ? "Let me look around here. Turn slowly to your right, all the way around." :
                          "I'll take a look around first. Turn slowly to your right, all the way around.");
   await new Promise((r) => setTimeout(r, 1800));             // let the instruction land
-  const views = [];
-  for (let i = 0; i < 8 && S.mission; i++) {                   // ~11 s slow spin
-    const b = await frameBlob(); if (b) views.push(b);
-    await new Promise((r) => setTimeout(r, 1400));
+  const views = [], headings = [];
+  if (NATIVE && N.heading != null) {
+    // Measured spin: grab a view each time the phone has turned another ~45 degrees (up to 25 s).
+    const startH = N.heading; let turned = 0, last = N.heading, nextAt = 0, t0 = Date.now();
+    while (S.mission && views.length < 8 && Date.now() - t0 < 25000) {
+      turned += ((N.heading - last + 540) % 360) - 180; last = N.heading;
+      if (Math.abs(turned) >= nextAt) { const b = await frameBlob(); if (b) { views.push(b); headings.push(N.heading); } nextAt += 45; }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  } else {
+    for (let i = 0; i < 8 && S.mission; i++) {                 // ~11 s slow spin, timed
+      const b = await frameBlob(); if (b) views.push(b);
+      await new Promise((r) => setTimeout(r, 1400));
+    }
   }
   if (!S.mission) return;
   say("Okay, stop there. Let me think.", { urgent: true });
@@ -342,6 +392,12 @@ async function lookAround(why) {
     }
     m.via = (p.search || "door").toLowerCase(); m.target = p.target || m.via;
     m.door = null; m.doorAt = 0; m.dxs = null; m.centered = false; m.lastDir = null; m.gotTapped = false; m.doorChecks = 0;
+    if (headings.length && Number.isInteger(p.view) && headings[p.view] != null) {
+      // Measured turn: guide until the phone faces the chosen view's heading, then find the landmark.
+      m.turnTo = headings[p.view];
+      say(`${(p.say || "").split(/(?<=\.)\s/)[0]} I'll tap the side to turn toward, and say stop.`);
+      m.phase = "turn"; m.phaseAt = Date.now(); render(); return;
+    }
     say(p.say || `Let's head for the ${m.target}.`);
     m.phase = "scan"; m.phaseAt = Date.now(); render();
   } catch (e) { log("look around failed", e); m.via = "door"; m.phase = "scan"; m.phaseAt = Date.now(); say("Turn slowly, I'm looking for a door."); }
@@ -350,6 +406,16 @@ async function lookAround(why) {
 // While walking toward a landmark: if something is actually in the way, stop and re-decide.
 async function obstacleCheck(m) {
   m.obstacleCheckAt = Date.now();
+  if (N.depth) {                                       // LiDAR: real distances, no guessing
+    const targetClose = m.pin && N.pose && roomDist(N.pose, m.pin) < 1.2;
+    if (N.depth.ahead < 0.7 && !targetClose) {
+      const side = N.depth.left > N.depth.right ? "left" : "right";
+      say(`Stop. Something's ${N.depth.ahead.toFixed(1)} meters ahead. There's more room on your ${side}.`, { urgent: true });
+      m.blockedCount = (m.blockedCount || 0) + 1;
+      if (m.blockedCount >= 3) { m.blockedCount = 0; lookAround(`blocked on the way to the ${m.target || m.via}`); }
+    } else m.blockedCount = 0;
+    return;
+  }
   try {
     const fd = new FormData(); fd.append("image", lastFrame, "f.jpg");
     const r = await (await fetch(SERVER + "/local", { method: "POST", body: fd })).json();
@@ -393,6 +459,10 @@ async function handleStep(m, blob) {
 // Facing a blank wall with nothing to aim at: tell the user, like a friend would.
 async function wallCheck(m) {
   m.wallCheckAt = Date.now();
+  if (N.depth) {
+    if (N.depth.ahead < 1.0 && N.depth.left < 1.2 && N.depth.right < 1.2) mSay(`There's a wall about ${N.depth.ahead.toFixed(1)} meters in front of you. Turn slowly to your right.`, 8000);
+    return;
+  }
   try {
     const fd = new FormData(); fd.append("image", lastFrame, "f.jpg");
     const r = await (await fetch(SERVER + "/local", { method: "POST", body: fd })).json();
@@ -462,13 +532,14 @@ function mSay(text, every = 4000) {
 }
 function mPhase(phase, text) {
   const m = S.mission; m.phase = phase; m.phaseAt = Date.now();
-  if (phase === "approach") { m.legStart = Date.now(); m.bestSize = 0; m.bestAt = Date.now(); }   // timing this leg + progress
+  if (phase === "approach") { m.legStart = Date.now(); m.bestSize = 0; m.bestAt = Date.now(); m.legFrom = N.pose ? { x: N.pose.x, z: N.pose.z } : null; }
   if (text) mSay(text, 0); log("mission:", phase); render();
 }
 function endLeg(m, extraSeconds = 0) {
   if (!m.legStart) return;
   m.legs = m.legs || [];
-  m.legs.push({ target: m.target || m.via, seconds: Math.round((Date.now() - m.legStart) / 1000 + extraSeconds), door: /door/.test(m.via) });
+  m.legs.push({ target: m.target || m.via, seconds: Math.round((Date.now() - m.legStart) / 1000 + extraSeconds), door: /door/.test(m.via),
+                from: m.legFrom || null });
   m.legStart = 0;
   log("leg:", JSON.stringify(m.legs.at(-1)));
 }
@@ -482,6 +553,12 @@ function backtrack(m, why) {
   if (!leg) { say("This is a dead end, and I don't have a way back recorded. Let me look around."); return lookAround(why); }
   m.history.push(`dead end: ${why}. Went back from ${leg.target}; don't try it again.`);
   m.phase = "backtrack"; m.phaseAt = Date.now(); render();
+  if (leg.from && N.pose) {                                         // ARKit: walk back to where the leg started
+    m.backTo = leg.from;
+    const d = roomDist(N.pose, leg.from);
+    say(`${why ? why[0].toUpperCase() + why.slice(1) + ". " : ""}Let's go back. Turn around${leg.door ? " and go back through the door" : ""}. About ${Math.max(1, Math.round(d))} meters. I'll tap if you drift.`);
+    return;
+  }
   const walk = Math.max(2, leg.seconds);
   S.back = { steps: [{ action: "turn_around", seconds: 0 }, { action: "walk", seconds: walk, landmark: leg.door ? "door" : null }, { action: "arrive" }],
              i: 0, started: Date.now(), arriveMsg: "We're back. Let me look around again.", onArrive: () => S.mission && lookAround(`came back from ${leg.target}`) };
@@ -489,7 +566,12 @@ function backtrack(m, why) {
 }
 function missionCue() {
   const m = S.mission, t = Date.now();
-  if (m.phase === "backtrack") return S.back ? backCue() : null;
+  if (m.phase === "backtrack") return S.back ? backCue() : (m.backTo ? walkToCue(m.backTo) : null);
+  if (m.phase === "turn" && m.turnTo != null && N.heading != null) {
+    const off = ((m.turnTo - N.heading + 540) % 360) - 180;
+    return Math.abs(off) > 18 ? { side: off < 0 ? "left" : "right", interval: Math.abs(off) > 90 ? 0.5 : 0.9, kind: "tap" } : null;
+  }
+  if (m.phase === "approach" && m.pin && N.pose) return walkToCue(m.pin);
   const target = m.phase === "arrive" ? m.proofHit : m.door;
   const fresh = target && t - (m.phase === "arrive" ? m.proofAt : m.doorAt) < 1500;
   if (S.hint === "stop" && (m.phase === "approach")) return { side: "both", interval: 0.25, kind: "stop" };
@@ -504,7 +586,17 @@ function missionCue() {
 }
 async function missionStep(blob) {
   const m = S.mission;
-  if (m.planning || m.phase === "plan" || m.phase === "sweep" || m.phase === "backtrack") return;
+  if (m.planning || m.phase === "plan" || m.phase === "sweep") return;
+  if (m.phase === "turn") {
+    const off = ((m.turnTo - N.heading + 540) % 360) - 180;
+    if (Math.abs(off) <= 18) { m.turnTo = null; say("Stop. It should be right in front of you."); m.phase = "scan"; m.phaseAt = Date.now(); render(); }
+    else if (Date.now() - m.phaseAt > 20000) { m.turnTo = null; m.phase = "scan"; m.phaseAt = Date.now(); }
+    return;
+  }
+  if (m.phase === "backtrack") {
+    if (m.backTo && N.pose && roomDist(N.pose, m.backTo) < 0.7) { m.backTo = null; say("We're back. Let me look around again."); lookAround("came back to the previous spot"); }
+    return;
+  }
   if (m.phase === "handle") return handleStep(m, blob);
   const labels = [m.via, ...m.proof].join(",");
   const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("labels", labels);
@@ -568,13 +660,21 @@ async function missionStep(blob) {
           if (!S.mission) return; m.confirming = false;
           if (c.is_it === false) { log("not a", m.via, "->", c.actually); m.door = null; m.doorAt = 0; m.dxs = null; m.centered = false;
                                    return mPhase("scan", `That's a ${c.actually || "something else"}, not a ${m.via}. Keep turning slowly.`); }
-          mPhase("approach", `It's straight ahead. Walk forward slowly.`);
+          pinLandmark(m, m.door);
+          const dist = N.depth ? ` About ${Math.max(1, Math.round(N.depth.ahead))} meters.` : "";
+          mPhase("approach", `It's straight ahead.${dist} Walk forward slowly.`);
         }).catch(() => { m.confirming = false; mPhase("approach", `It's straight ahead. Walk forward slowly.`); });
       }
       return;
     }
     case "approach":
       if (t - (m.obstacleCheckAt || 0) > 1500) obstacleCheck(m);        // decision point 1: something in the way
+      if (m.pin && N.pose) {                                              // ARKit: we know where it is in the room
+        const d = roomDist(N.pose, m.pin);
+        if (d < 0.9) { endLeg(m, /door/.test(m.via) ? 3 : 0); m.pin = null; return /door/.test(m.via) ? doorStep(m) : lookAround(`reached the ${m.target || m.via}`); }
+        if (t - (m.distSaidAt || 0) > 6000 && d > 1.5) { m.distSaidAt = t; mSay(`About ${Math.round(d)} meters to go.`, 6000); }
+        return;
+      }
       if (!seeDoor && t - m.doorAt > 4000) { m.dxs = null; m.centered = false;    // keep the plan: just find it again
         return mPhase("scan", "Stop for a second. Turn slowly until I find it again."); }
       if (seeDoor && m.door.size > 0.3) {
@@ -647,7 +747,7 @@ async function findStep(blob) {
 let video, canvas, busy = false, lastFrame = null, hazardSaidAt = 0, camOn = null;
 // Camera only when asked: find something, describe, or active guidance. Not while just talking.
 function ensureCamera() {
-  if (!camOn) camOn = startCamera().then(() => localLoop()).catch((e) => { log("camera:", e.message); camOn = null; });
+  if (!camOn) camOn = (NATIVE ? Promise.resolve() : startCamera()).then(() => localLoop()).catch((e) => { log("camera:", e.message); camOn = null; });
   return camOn;
 }
 const guiding = () => Boolean(S.route || S.back || S.learning || S.mission);
@@ -666,6 +766,7 @@ async function startCamera(deviceId) {
   $("camsel").onchange = (e) => { stream.getTracks().forEach((t) => t.stop()); startCamera(e.target.value); };
 }
 async function frameBlob() {
+  if (NATIVE) { const b64 = await askNative({ type: "frame" }); return b64 ? b64ToBlob(b64) : null; }
   if (!video?.videoWidth) return null;
   canvas.width = 640; canvas.height = Math.round((640 * video.videoHeight) / video.videoWidth);   // full width, no crop
   canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -842,7 +943,7 @@ function render() {
   $("gps").className = "v " + (S.sim || S.gpsOk ? "ok" : "warn");
   $("heading").textContent = S.heading == null ? "walk a few steps" : `${Math.round(S.heading)}°`;
   const st = S.route?.steps[S.stepIdx];
-  $("next").textContent = S.mission ? `${S.mission.room}: ${S.mission.phase}` : S.back ? `going back (${S.back.i + 1}/${S.back.steps.length})` :
+  $("next").textContent = S.mission ? `${S.mission.room}: ${S.mission.phase}${S.mission.pin && N.pose ? ` · ${roomDist(N.pose, S.mission.pin).toFixed(1)} m` : ""}` : S.back ? `going back (${S.back.i + 1}/${S.back.steps.length})` :
     st && S.pos ? `${st.turn} in ${Math.round(dist(S.pos, st))} m` : "no route";
 }
 async function checkServer() {
@@ -862,7 +963,8 @@ async function start() {
     S.sim = true; onFix({ lat: +qs.get("lat"), lon: +qs.get("lon") }, 5, false);
     say("Simulated start position set. Use W to walk, A and F to turn.");
   }
-  try { await startListening(); } catch (e) { log("mic:", e.message); $("listen").textContent = "mic off"; }
+  if (NATIVE) { toNative({ type: "ready" }); showListen(); $("listen").className = "v ok"; }   // the phone's mic, natively
+  else try { await startListening(); } catch (e) { log("mic:", e.message); $("listen").textContent = "mic off"; }
   audioLoop();
 }
 $("start").onclick = start;

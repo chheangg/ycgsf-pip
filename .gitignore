@@ -1,0 +1,22 @@
+# Xcode build output and per-Mac Xcode settings
+ios/build/
+ios/Pip.xcodeproj/xcuserdata/
+ios/Pip.xcodeproj/project.xcworkspace/xcuserdata/
+# Local Claude Code settings (paths that only exist on one Mac)
+.claude/
+# Python and macOS clutter
+__pycache__/
+.DS_Store
+# graphify: graph.json, GRAPH_REPORT.md and graph.html are shared; caches and local paths are not
+graphify-out/cache/
+graphify-out/20*/
+graphify-out/.graphify_python
+graphify-out/.graphify_root
+graphify-out/.graphify_detect.json
+graphify-out/.graphify_ast.json
+graphify-out/.graphify_semantic.json
+graphify-out/.graphify_cached.json
+graphify-out/.graphify_chunk_*.json
+graphify-out/.graphify_*.txt
+graphify-out/cost.json
+graphify-out/manifest.json
