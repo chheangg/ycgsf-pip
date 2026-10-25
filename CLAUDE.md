@@ -1,6 +1,6 @@
 # Pip app (iPhone + screen) and design
 
-This repo holds Pip: `frontend/` (the screen and app logic), `ios/` (the iPhone app that shows `frontend/`), `server/` (the model server on the RTX 4090, reached over Tailscale), `design/` (the pen.dev design `design/untitled.pen`, its tokens and shaders) and `tools/` (the design check, code check, shader export and `deploy.sh`). `run.sh` serves `frontend/` on localhost. Trip recordings and trip tools live in the separate ycgsf repo (`../ycgsf-pip` on this Mac).
+This repo holds Pip: `frontend/` (the screen and app logic), `ios/` (the iPhone app that shows `frontend/`), `server/` (the model server on the RTX 4090, reached over Tailscale), `design/` (the pen.dev design `design/untitled.pen`, its tokens and shaders) and `tools/` (the design check, code check, shader export and `deploy.sh`). `run.sh` serves `frontend/` on localhost.
 
 - **Deploy the server** with `tools/deploy.sh`: it copies `server/` to the 4090 PC over Tailscale (`hackteam@100.71.218.127`), stops every running copy of Pip there (`server/restart_pip.ps1`: the task, its restart loop, every API and both llama-servers; nothing else on that PC), restarts, and warms the models up. The previous `app.py` is kept next to it as `app.py.bak-<time>`.
 
@@ -37,7 +37,9 @@ Shared components: Status Bar, Key, Talk, Talk · On, Deafen, Deafen · On, Voic
 ## Testing: Mac or phone
 
 - **On the Mac (test it yourself):** anything that doesn't need someone walking around. That covers screens, animations and layout (through Xcode, on the plugged-in iPhone or the iOS Simulator), the design check, builds, speech and taps, server replies, and reading logs and trip recordings.
-- **On the phone (leave it to the user):** Pip's main job, which needs a person moving through a real place. That covers pathfinding, guiding, teaching and following routes, GPS walks, finding a room or a grocery aisle, obstacle warnings, ARKit/LiDAR tracking and camera finding. Don't build simulated walks or fake environments to test these. Ask the user to try it, then pull the trip recording (`tools/pull_trip.sh` in the ycgsf repo) and diagnose from the real data.
+- **On the phone (leave it to the user):** Pip's main job, which needs a person moving through a real place. That covers pathfinding, guiding, teaching and following routes, GPS walks, finding a room or a grocery aisle, obstacle warnings, ARKit/LiDAR tracking and camera finding. Don't build simulated walks or fake environments to test these. Ask the user to try it, then copy the trip recording off the phone (`trips/` is git-ignored):
+  `xcrun devicectl device copy from --device <id> --domain-type appDataContainer --domain-identifier com.ycgsf.pip --source Documents/trips --destination trips`
+  and diagnose from the real data.
 
 ## Clean code contract
 

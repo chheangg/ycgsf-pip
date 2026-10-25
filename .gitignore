@@ -20,3 +20,5 @@ graphify-out/.graphify_chunk_*.json
 graphify-out/.graphify_*.txt
 graphify-out/cost.json
 graphify-out/manifest.json
+# Trip recordings copied off the phone (large, personal)
+trips/

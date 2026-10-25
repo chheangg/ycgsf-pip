@@ -206,7 +206,8 @@ P pause, T test the taps (left, then right), ←/→ "I turned".
   `design/shaders/`, run `python3 tools/export_shaders.py`.
 - Screens, layout, speech and server replies can be tested at a desk. Guiding can't: pathfinding, finding a room,
   obstacle warnings and ARKit tracking get tested by a person walking with the phone. The app records each trip
-  (sensors, photos, floor map); `tools/pull_trip.sh` in the ycgsf repo copies them off the phone and draws them.
+  (sensors, photos, floor map); copy them off the phone with
+  `xcrun devicectl device copy from --device <id> --domain-type appDataContainer --domain-identifier com.ycgsf.pip --source Documents/trips --destination trips`.
 - Route following borrows a lot from [Clew](https://github.com/occamLab/Clew). The turn words, tap rates and
   progress tones follow published studies with blind users; the references are in comments in `frontend/app.js`.
 
