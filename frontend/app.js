@@ -274,6 +274,13 @@ function replay(name) {
 
 // ---------- GO TO A ROOM: door -> line up -> walk -> through -> verify (done only on proof) ----------
 const sideOf = (dx) => (dx < 0 ? "left" : "right");
+// Detector boxes jitter frame to frame: smooth the position, and use a dead zone so "centered" can't flip-flop.
+function track(m, hit) {
+  m.dxs = m.dxs == null ? hit.dx : 0.55 * m.dxs + 0.45 * hit.dx;
+  const enter = 0.14, leave = 0.24;
+  m.centered = m.centered ? Math.abs(m.dxs) < leave : Math.abs(m.dxs) < enter;
+  return m.centered ? "center" : sideOf(m.dxs);
+}
 function missionStart(room, via, proof) {
   ensureCamera();
   S.find = null; S.route = null; S.back = null;
@@ -281,6 +288,26 @@ function missionStart(room, via, proof) {
                 door: null, doorAt: 0, proofHit: null, proofAt: 0, saidAt: 0, lastSay: "", tries: 0, history: [], planning: false };
   missionReplan("start");
 }
+// At a door: the vision model says open/closed, where the handle is, push or pull. Coach until it's open.
+async function doorStep(m) {
+  if (m.doorBusy) return;
+  m.doorBusy = true;
+  try {
+    const blob = lastFrame || (await frameBlob());
+    const fd = new FormData(); fd.append("image", blob, "f.jpg");
+    const d = await (await fetch(SERVER + "/door", { method: "POST", body: fd })).json();
+    if (!S.mission) return;
+    log("door:", JSON.stringify(d));
+    if (d.door === "open") { say(d.say || "It's open. Walk through slowly, about two steps."); m.phase = "through"; m.phaseAt = Date.now(); render(); return; }
+    if (d.door === "none") { return missionReplan("thought I was at a door but don't see one up close"); }
+    const first = m.phase !== "door";
+    m.phase = "door"; m.phaseAt = Date.now(); m.doorChecks = (m.doorChecks || 0) + 1; render();
+    if (first) say(d.say || "The door's closed. Find the handle and open it.");
+    else if (m.doorChecks % 3 === 0) say(d.say || "The door still looks closed.");   // gentle reminder, not every check
+  } catch (e) { log("door check failed", e); }
+  finally { if (S.mission) m.doorBusy = false; }
+}
+
 // At every landmark (start, door reached, lost, wrong room) Pip looks and re-plans the next sub-goal.
 async function missionReplan(why) {
   const m = S.mission; if (!m || m.planning) return;
@@ -295,13 +322,13 @@ async function missionReplan(why) {
       say(p.say, { interrupt: false }); m.phase = "through"; m.phaseAt = Date.now(); render(); return;
     }
     m.via = (p.search || "door").toLowerCase(); m.target = p.target || m.via;
-    m.door = null; m.doorAt = 0;
+    m.door = null; m.doorAt = 0; m.dxs = null; m.centered = false; m.lastDir = null; m.gotTapped = false; m.doorChecks = 0;
     say(p.say || `Let's find a ${m.via}.`, { interrupt: false });
     mPhase("scan");
   } catch (e) { log("replan failed", e); m.via = "door"; mPhase("scan", "Turn slowly, I'm looking for a door."); }
   finally { if (S.mission) S.mission.planning = false; }
 }
-function mSay(text, every = 3000) {
+function mSay(text, every = 4000) {
   const m = S.mission;
   if (text !== m.lastSay || Date.now() - m.saidAt > every) { say(text, { interrupt: true }); m.lastSay = text; m.saidAt = Date.now(); }
 }
@@ -313,10 +340,11 @@ function missionCue() {
   if (S.hint === "stop" && (m.phase === "approach")) return { side: "both", interval: 0.25, kind: "stop" };
   if (!fresh) return null;
   if (m.phase === "orient" || m.phase === "arrive") {
-    if (Math.abs(target.dx) > 0.12) return { side: sideOf(target.dx), interval: 0.35, kind: "tap" };
-    return { side: "both", interval: 0.6, kind: "got" };
+    if (!m.centered) return { side: sideOf(m.dxs), interval: 1.1, kind: "tap" };   // gentle, about once a second
+    if (!m.gotTapped) { m.gotTapped = true; return { side: "both", interval: 0.2, kind: "got", double: true }; }
+    return null;                                                                     // on target: quiet
   }
-  if (m.phase === "approach" && Math.abs(target.dx) > 0.15) return { side: sideOf(target.dx), interval: 0.6, kind: "tap" };
+  if (m.phase === "approach" && !m.centered && Math.abs(m.dxs) > 0.28) return { side: sideOf(m.dxs), interval: 1.4, kind: "tap" };
   return null;
 }
 async function missionStep(blob) {
@@ -350,20 +378,29 @@ async function missionStep(blob) {
       if (seeDoor) return mPhase("orient", `I see the ${m.target || m.via}.`);
       if (since > 20000) { m.tries++; return missionReplan(`couldn't find ${m.via} after turning`); }
       return mSay(`Turn slowly, I'm looking for the ${m.target || m.via}.`, 6000);
-    case "orient":
-      if (!seeDoor && since > 2000) return mPhase("scan", `Lost it. Turn slowly.`);
-      if (seeDoor && Math.abs(m.door.dx) > 0.12) return mSay(`${sideOf(m.door.dx)} ${sideOf(m.door.dx)}`, 1500);
-      if (seeDoor) return mPhase("approach", `It's straight ahead. Walk forward slowly.`);
+    case "orient": {
+      if (!seeDoor && since > 2500) { m.dxs = null; m.centered = false; return mPhase("scan", `Lost it. Turn slowly.`); }
+      if (!seeDoor) return;
+      const dir = track(m, m.door);
+      if (dir !== "center") { m.gotTapped = false; if (dir !== m.lastDir) { m.lastDir = dir; mSay(`${dir} ${dir}`, 0); } else mSay(`${dir} ${dir}`, 5000); return; }
+      m.lastDir = "center";
+      if (!m.centerSince) m.centerSince = t;
+      if (t - m.centerSince > 800) { m.centerSince = 0; return mPhase("approach", `It's straight ahead. Walk forward slowly.`); }   // hold it a moment
       return;
+    }
     case "approach":
       if (!seeDoor && since > 4000) return missionReplan(`lost sight of the ${m.via} while walking`);
       if (seeDoor && m.door.size > 0.3) {
-        return missionReplan(`standing right at the ${m.target || m.via}`);   // look at it and coach the next move
+        if (/door/.test(m.via)) return doorStep(m);                            // a door has to be opened first
+        return missionReplan(`standing right at the ${m.target || m.via}`);   // other landmarks: look and re-plan
       }
-      if (seeDoor && Math.abs(m.door.dx) > 0.15) return mSay(`a bit ${sideOf(m.door.dx)}`, 2500);
+      if (seeDoor) { const dir = track(m, m.door); if (dir !== "center" && Math.abs(m.dxs) > 0.28) mSay(`a bit ${dir}`, 5000); }
+      return;
+    case "door":       // waiting for the door to be opened: re-check every few seconds
+      if (since > 3500 && !m.doorBusy) return doorStep(m);
       return;
     case "through":
-      if (since > 10000) return missionReplan("went through the door");
+      if (since > 7000) return missionReplan("walked through the open door");
       return;
     case "verify":
       if (since > 14000) {
@@ -651,7 +688,7 @@ document.addEventListener("keydown", (e) => {
   else if (k === "d") describe();
   else if (k === "l") { const t = prompt("What should Pip find? (e.g. door knob)"); if (t) findStart(t); }
   else if (e.key === "Escape") { if (S.mission) { S.mission = null; say("Stopped."); render(); } else findStop("Stopped looking."); }
-  else if (k === "n" && S.mission?.phase === "through") missionReplan("went through the door");
+  else if (k === "n" && (S.mission?.phase === "through" || S.mission?.phase === "door")) missionReplan("walked through the open door");
   else if (k === "h") {
     listenMode = { always: "wake", wake: "push", push: "always" }[listenMode]; alwaysOn = listenMode !== "push";
     localStorage.setItem("pip.listen", listenMode); showListen();
