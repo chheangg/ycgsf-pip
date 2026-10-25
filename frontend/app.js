@@ -316,7 +316,7 @@ async function start() {
   if (started) return; started = true;
   ac = new AudioContext();
   $("start").remove();
-  say("Starting. Hold space to talk. Press T to test the taps.");
+  say("Hi, I'm Pip. Hold space to talk to me. Press T to test the taps.");
   checkServer(); setInterval(checkServer, 15000);
   fetch(SERVER + "/warmup", { method: "POST" }).then(() => checkServer()).catch(() => {});
   startGPS(); startSegment();
