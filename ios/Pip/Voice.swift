@@ -6,7 +6,6 @@ import AVFoundation
 
 final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate {
     var onSpoken: ((Int) -> Void)?                 // speech id finished (or was stopped)
-    var onSpeaking: ((Bool) -> Void)?
     private let engine = AVAudioEngine()
     private let taps = AVAudioPlayerNode()
     private let fmt = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)!
@@ -114,7 +113,6 @@ final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate 
     func say(_ text: String, id: Int, server: String) {
         stop(notify: true)
         currentId = id; self.server = server
-        onSpeaking?(true)
         parts = Self.sentences(text)
         playNext(id)
     }
@@ -170,7 +168,6 @@ final class Voice: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerDelegate 
     private func finished(_ id: Int) {
         guard currentId == id else { return }
         currentId = nil
-        onSpeaking?(false)
         onSpoken?(id)
     }
 

@@ -1,18 +1,18 @@
-// Always-on listening with the PHONE's microphone (opening a Bluetooth headset's mic would switch it to mono
-// "call" audio and break the left/right taps). Speech is cut into phrases by loudness and handed to the brain
-// as 16 kHz float32 PCM, the format the 4090's speech model takes.
+// Hold-to-talk with the PHONE's microphone (opening a Bluetooth headset's mic would switch it to mono
+// "call" audio and break the left/right taps). While the talk bar is held, the mic records; on release the
+// recording goes to the brain as 16 kHz float32 PCM, the format the 4090's speech model takes.
 import AVFoundation
 
 final class Mic {
     var onPhrase: ((Data) -> Void)?
-    var paused = false                      // set while Pip is speaking so it doesn't hear itself
-    var level: Float = 0                    // loudness of the last buffer (0..1), drives the voice wave on screen
+    var level: Float = 0                    // loudness of the last buffer while held (0..1), drives the voice wave on screen
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
     private let out = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
     private var phrase: [Float] = []
-    private var preroll: [[Float]] = []
-    private var speaking = false, loudMs = 0.0, quietMs = 0.0, floor: Float = 0.01
+    private var holding = false
+    private let lock = NSLock()             // talk() runs on the main thread, handle() on the audio thread
+    private static let maxSamples = 16000 * 30   // 30 s at 16 kHz: longer holds keep only the first 30 s
 
     func start() {
         AVAudioApplication.requestRecordPermission { ok in
@@ -64,33 +64,25 @@ final class Mic {
         try? engine.start()
     }
 
-    private func handle(_ buf: AVAudioPCMBuffer) {
-        guard let pcm = to16k(buf) else { return }
-        let ms = Double(pcm.count) / 16.0
-        if paused { level = 0; reset(); return }
-        var e: Float = 0
-        for v in pcm { e += v * v }
-        let rms = sqrt(e / Float(max(pcm.count, 1)))
-        level = rms
-        let loud = rms > max(0.012, floor * 3)
-        if !speaking { floor = floor * 0.98 + rms * 0.02 }
-        if loud { loudMs += ms; quietMs = 0 } else { quietMs += ms }
-        if !speaking && loudMs > 120 { speaking = true; phrase = preroll.flatMap { $0 } }
-        if speaking { phrase += pcm } else {
-            preroll.append(pcm); if preroll.count > 3 { preroll.removeFirst() }
-            if !loud { loudMs = 0 }
-        }
-        if speaking && (quietMs > 700 || Double(phrase.count) / 16.0 > 9000) {
-            let done = phrase
-            reset()
-            if done.count > 8000 {
-                let data = done.withUnsafeBufferPointer { Data(buffer: $0) }
-                DispatchQueue.main.async { self.onPhrase?(data) }
-            }
-        }
+    /// The talk bar went down (on) or up (off). On release, anything longer than a quarter second is sent.
+    func talk(_ on: Bool) {
+        lock.lock()
+        let done = holding && !on ? phrase : []
+        holding = on; phrase = []
+        lock.unlock()
+        if !on { level = 0 }
+        if done.count > 4000 { onPhrase?(done.withUnsafeBufferPointer { Data(buffer: $0) }) }
     }
 
-    private func reset() { speaking = false; loudMs = 0; quietMs = 0; phrase = [] }
+    private func handle(_ buf: AVAudioPCMBuffer) {
+        guard let pcm = to16k(buf) else { return }
+        lock.lock(); defer { lock.unlock() }
+        guard holding else { return }
+        var e: Float = 0
+        for v in pcm { e += v * v }
+        level = sqrt(e / Float(max(pcm.count, 1)))
+        if phrase.count < Self.maxSamples { phrase += pcm }
+    }
 
     private var restarting = false
     /// iOS stops the engine on route changes, interruptions, or when something else changes the audio

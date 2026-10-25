@@ -31,7 +31,6 @@ final class Sensors: NSObject, ObservableObject, CLLocationManagerDelegate {
         Mic.configureAudioSession()        // before anything plays: record + stereo Bluetooth output
         voice = Voice()
         super.init()
-        voice.onSpeaking = { [weak self] on in self?.mic.paused = on }
         location.delegate = self
         location.desiredAccuracy = kCLLocationAccuracyBest
         if useAR {

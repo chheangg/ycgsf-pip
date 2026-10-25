@@ -1,5 +1,5 @@
 // The bridge between the phone's sensors and Pip's brain (frontend/app.js, bundled in the app).
-//   JS -> native: window.webkit.messageHandlers.pip.postMessage({type: "frame"|"gps"|"speaking"|"ready", ...})
+//   JS -> native: window.webkit.messageHandlers.pip.postMessage({type: "frame"|"gps"|"talk"|"ready", ...})
 //   native -> JS: window.pipNative.update(snapshot) 10x/s, window.pipNative.frame(id, base64jpeg),
 //                 window.pipNative.phrase(base64pcm16k)
 import MapKit
@@ -157,8 +157,8 @@ struct PipWebView: UIViewRepresentable {
                 if let line = body["line"] as? String { LogFile.append(line); Trip.shared.write(["log": line]) }
             case "trace":
                 Trip.shared.write(["pip": body["s"] ?? NSNull()])   // what Pip is doing (mission, route, target)
-            case "speaking":
-                break                                   // native voice pauses the mic itself
+            case "talk":                                // the talk bar: held (on) or let go (off)
+                sensors.mic.talk(body["on"] as? Bool ?? false)
             case "tap":
                 sensors.voice.tap(side: body["side"] as? String ?? "both", kind: body["kind"] as? String ?? "tap",
                                   inverted: body["inverted"] as? Bool ?? true, freq: body["freq"] as? Double)

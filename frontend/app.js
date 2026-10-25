@@ -31,11 +31,11 @@ window.pipNative = {
   frame(id, b64) { const r = nativeWaits.get(id); nativeWaits.delete(id); r?.(b64 || null); },
   pinned(id, p) { const r = nativeWaits.get(id); nativeWaits.delete(id); r?.(p); },
   spoke(id) { const r = nativeSpeech.get(id); nativeSpeech.delete(id); r?.(); },
-  phrase(b64) {
-    if (!started || muted) return;   // muted: Pip doesn't listen either
+  phrase(b64) {   // what you said while holding the talk bar (the phone records it)
+    if (!started) return;
     const bin = atob(b64), buf = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
-    if (listenMode !== "push") askPip({ body: buf.buffer, wake: listenMode === "always" ? "always" : "1" });
+    askPip({ body: buf.buffer });
   },
 };
 const b64ToBlob = (b64) => { const bin = atob(b64), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Blob([u], { type: "image/jpeg" }); };
@@ -90,9 +90,8 @@ const S = {
 // ---------- 1. AUDIO: tip-tap with swapped channels ----------
 let ac;
 const invert = () => (localStorage.getItem("pip.invert") ?? "1") === "1";   // Setup > HEADPHONES FLIPPED
-let muted = false;   // the Mute Pip button: no voice, no taps, and no listening
+let deafened = false;   // the Deafen button: Pip's voice goes quiet; taps and urgent warnings still play
 function tap(side, kind = "tap", freq) {
-  if (muted) return;
   if (NATIVE) return toNative({ type: "tap", side, kind, inverted: invert(), ...(freq ? { freq } : {}) });   // native audio keeps the mic alive
   if (!ac) return;
   const t = ac.currentTime, osc = ac.createOscillator(), g = ac.createGain(), out = ac.createChannelMerger(2);
@@ -150,29 +149,30 @@ function audioLoop() {
 // only urgent lines (obstacle, stop) cut in.
 let voiceSrc = null, voiceChain = Promise.resolve(), speakingUntil = 0, voiceBusy = false, pendingLine = null, voiceGen = 0;
 const speaking = () => voiceBusy || performance.now() < speakingUntil || speechSynthesis.speaking;
+function hush() {   // stop what Pip is saying right now and drop the waiting line
+  voiceGen++; try { voiceSrc?.stop(); } catch {} speechSynthesis.cancel(); toNative({ type: "stopSay" });
+  pendingLine = null; voiceBusy = false;
+}
 function say(text, { urgent = false } = {}) {
   if (!text) return;
   S.lastSpoken = text; S.spokeAt = Date.now();   // the Listening screen (ui.js) shows it
-  if (muted) return;
+  if (deafened && !urgent) return log("SAY (deafened)", text);   // on screen only; urgent warnings still speak
   log("SAY", text);
-  if (urgent) { voiceGen++; try { voiceSrc?.stop(); } catch {} speechSynthesis.cancel(); toNative({ type: "stopSay" }); pendingLine = null; voiceBusy = false; }
+  if (urgent) hush();
   if (voiceBusy) { pendingLine = text; return; }
   playLine(text);
 }
-$("mute").onclick = () => {
-  muted = !muted;
-  $("mute").classList.toggle("on", muted); $("mute").setAttribute("aria-pressed", muted);   // ui.js sets the label (Mute / Unmute Pip)
-  if (muted) {   // stop what Pip is saying right now
-    voiceGen++; try { voiceSrc?.stop(); } catch {} speechSynthesis.cancel(); toNative({ type: "stopSay" });
-    pendingLine = null; voiceBusy = false; toNative({ type: "speaking", on: false });
-  }
-  log(muted ? "muted" : "unmuted");
+$("deafen").onclick = () => {
+  if (deafened) { deafened = false; say("Voice on."); }
+  else { say("Voice off.", { urgent: true }); deafened = true; }   // the last line Pip says out loud
+  $("deafen").classList.toggle("on", deafened); $("deafen").setAttribute("aria-pressed", deafened);   // ui.js sets the label (Deafen / Undeafen)
+  log(deafened ? "deafened" : "undeafened");
 };
 async function playLine(text) {
-  voiceBusy = true; const gen = voiceGen; toNative({ type: "speaking", on: true });
+  voiceBusy = true; const gen = voiceGen;
   try { await speakNow(text, gen); } catch (e) { log("speech failed", e); }
   if (gen !== voiceGen) return;            // an urgent line took over
-  voiceBusy = false; setTimeout(() => !voiceBusy && toNative({ type: "speaking", on: false }), 300);
+  voiceBusy = false;
   if (pendingLine) { const next = pendingLine; pendingLine = null; playLine(next); }
 }
 async function speakNow(text, gen = voiceGen) {
@@ -345,7 +345,7 @@ function traceState() {
       : { name: w.name, i: w.i, n: w.pts.length, target: w.pts[w.i], same: w.same, here: locate(w.pts[w.i]), phase: w.phase, on: w.onCourse }),
     timed: S.back && { i: S.back.i, step: S.back.steps[S.back.i] },
     learning: L && { name: L.name, crumbs: L.crumbs?.length, last: L.lastAR || L.lastGPS },
-    find: S.find && { target: S.find.target, move: S.find.move, dx: S.find.dx, dy: S.find.dy, size: S.find.size, score: S.find.score }, cue: S.lastCue, hint: S.hint, hazards: S.hazards, muted, paused: S.paused,
+    find: S.find && { target: S.find.target, move: S.find.move, dx: S.find.dx, dy: S.find.dy, size: S.find.size, score: S.find.score }, cue: S.lastCue, hint: S.hint, hazards: S.hazards, deafened, paused: S.paused,
   }));
 }
 if (NATIVE) setInterval(() => { try { toNative({ type: "trace", s: traceState() }); } catch (e) { log("trace error", e.message); } }, 500);
@@ -811,7 +811,6 @@ async function gpsWalk(name, to, serverSteps, entrance = true, { go = false, pla
   S.preview = { name, path, mins, entrance, to, steps: serverSteps, placeId, acc: S.fix.acc };
   render();
   if (go) { say(`${name} is ${distWords(path.total)} away, about ${mins} minutes walking.`); return previewGo(); }
-  followUntil = Date.now() + 20000;   // a plain "yes" counts, no "Hey Pip" needed
   say(`${name} is ${distWords(path.total)} away, about ${mins} minutes walking. Want me to take you?`);
 }
 function previewGo() {   // GO key, or "yes"
@@ -1928,10 +1927,11 @@ async function localLoop() {
   setTimeout(localLoop, 250);   // ~4 frames/s
 }
 
-// ---------- talk: hold Space, 16 kHz PCM to the 4090 ----------
+// ---------- talk: hold the talk bar (or Space), 16 kHz PCM to the 4090 ----------
+// Pip hears you only while you hold it. On the phone the native mic records. In a browser it's the laptop's
+// built-in mic: opening a Bluetooth headset's mic switches it to mono "headset mode" (left = right).
 let mic, micNode, micStream, chunks = [], talking = false, builtinMic;
-// Opening a Bluetooth headset's mic switches it to mono "headset mode" (left = right). So: use the
-// laptop's built-in mic, and only while Space is held.
+let micLevel = 0;   // loudness of the laptop mic while talking (the phone sends its own as N.mic), for the voice wave
 async function pickBuiltinMic() {
   const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput");
   builtinMic = devs.find((d) => /built-in|macbook|internal/i.test(d.label))?.deviceId;
@@ -1943,43 +1943,31 @@ async function startMic() {
   if (!builtinMic) { await pickBuiltinMic(); if (builtinMic) { micStream.getTracks().forEach((t) => t.stop()); return startMic(); } }
   mic = ac.createMediaStreamSource(micStream);
   micNode = ac.createScriptProcessor(4096, 1, 1);
-  micNode.onaudioprocess = (e) => { if (talking) chunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+  micNode.onaudioprocess = (e) => {
+    if (!talking) { micLevel = 0; return; }
+    const x = e.inputBuffer.getChannelData(0); chunks.push(new Float32Array(x));
+    let e2 = 0; for (let i = 0; i < x.length; i++) e2 += x[i] * x[i];
+    micLevel = Math.sqrt(e2 / x.length);
+  };
   mic.connect(micNode); micNode.connect(ac.destination);
 }
-// Always-on listening: cut speech out of the mic stream by loudness, send each phrase to Whisper on the
-// 4090. Only phrases starting with "Hey Pip" (or right after Pip spoke) reach the brain.
-let listenMode = localStorage.getItem("pip.listen") || "always";   // always | wake | push
-let micLevel = 0;   // loudness of the laptop mic (the phone sends its own as N.mic), for the voice wave
-let alwaysOn = listenMode !== "push", vad = { on: false, quietMs: 0, speechMs: 0, floor: 0.01, buf: [] }, followUntil = 0;
-async function startListening() {
-  await startMic();
-  micNode.onaudioprocess = (e) => {
-    const x = e.inputBuffer.getChannelData(0), ms = (x.length / ac.sampleRate) * 1000;
-    if (talking) { chunks.push(new Float32Array(x)); return; }          // Space push-to-talk wins
-    if (!alwaysOn || speaking()) { vad.on = false; vad.buf = []; return; }  // don't hear Pip itself
-    let e2 = 0; for (let i = 0; i < x.length; i++) e2 += x[i] * x[i];
-    const rms = Math.sqrt(e2 / x.length), loud = rms > Math.max(0.012, vad.floor * 3); micLevel = rms;
-    if (!vad.on) vad.floor = vad.floor * 0.98 + rms * 0.02;              // track background noise
-    if (loud) { vad.speechMs += ms; vad.quietMs = 0; } else vad.quietMs += ms;
-    if (!vad.on && vad.speechMs > 120) { vad.on = true; }
-    if (vad.on || loud) vad.buf.push(new Float32Array(x));
-    if (!vad.on && !loud) { vad.speechMs = 0; vad.buf = vad.buf.slice(-3); }   // keep a little pre-roll
-    const total = vad.buf.length * ms;
-    if (vad.on && (vad.quietMs > 700 || total > 9000)) {
-      const phrase = vad.buf; vad = { ...vad, on: false, quietMs: 0, speechMs: 0, buf: [] };
-      const pcm = to16k(phrase, ac.sampleRate);
-      if (pcm.length > 8000) askPip({ body: pcm.buffer, wake: listenMode === "always" ? "always" : "1" });
-    }
-  };
-  showListen();
+function talkStart() {   // the talk bar went down (or Space): Pip stops talking and listens
+  if (!started || talking) return;
+  talking = true; chunks = []; hush();
+  $("talk").classList.add("on"); toNative({ type: "haptic" }); tap("both");
+  if (NATIVE) toNative({ type: "talk", on: true });
+  else if (!micStream) startMic().catch((e) => log("mic:", e.message));
 }
-const LISTEN_LABEL = { always: "ALWAYS", wake: "HEY PIP", push: "HOLD SPACE" };
-function showListen() { $("listen").textContent = LISTEN_LABEL[listenMode]; }
-function cycleListen() {   // Setup > LISTEN, or the H key
-  listenMode = { always: "wake", wake: "push", push: "always" }[listenMode]; alwaysOn = listenMode !== "push";
-  localStorage.setItem("pip.listen", listenMode); showListen();
-  say({ always: "I'm always listening. Just talk to me.", wake: "Say Hey Pip when you need me.", push: "Okay, hold space to talk." }[listenMode]);
+function talkEnd() {   // let go: send what was said
+  if (!talking) return;
+  talking = false; $("talk").classList.remove("on"); tap("both");
+  if (NATIVE) toNative({ type: "talk", on: false });   // the phone sends the recording back through pipNative.phrase
+  else sendTalk();
 }
+const talkKey = $("talk");
+talkKey.addEventListener("pointerdown", (e) => { e.preventDefault(); talkKey.setPointerCapture(e.pointerId); talkStart(); });
+for (const ev of ["pointerup", "pointercancel", "lostpointercapture"]) talkKey.addEventListener(ev, talkEnd);
+talkKey.addEventListener("contextmenu", (e) => e.preventDefault());   // a long press must not open the iOS menu
 function to16k(parts, rate) {
   const all = new Float32Array(parts.reduce((n, p) => n + p.length, 0));
   let o = 0; for (const p of parts) { all.set(p, o); o += p.length; }
@@ -2002,17 +1990,14 @@ function status() {
            trip: S.trip ? { goal: S.trip.goal, place_id: S.trip.dest?.placeId || null, steps_done: S.trip.hops, now_in: S.trip.nowIn || null,
                             outside: S.trip.out, at_goal: Boolean(S.trip.atGoal), spaces_so_far: S.trip.rooms } : null };
 }
-async function askPip({ body, text, wake = false }) {
-  const url = `${SERVER}/talk?session=${SESSION}&ctx=${encodeURIComponent(JSON.stringify(status()))}` + (text ? `&text=${encodeURIComponent(text)}` : "") +
-              (wake ? `&wake=${wake}&followup=${Date.now() < followUntil ? 1 : 0}` : "");
+async function askPip({ body, text }) {
+  const url = `${SERVER}/talk?session=${SESSION}&ctx=${encodeURIComponent(JSON.stringify(status()))}` + (text ? `&text=${encodeURIComponent(text)}` : "");
   try {
     const r = await (await fetch(url, { method: "POST", body: body || "", signal: AbortSignal.timeout(30000) })).json();
     S.serverDown = 0;
     if (r.heard && answerLocally(r.heard)) { log("HEARD", r.heard, "-> answered on the phone"); return; }   // yes/no to a route preview, the FIND key
     if (r.ignored) { log("(not for Pip)", r.heard); return; }
     S.heard = r.heard || "";
-    if (r.awake) tap("both", "got");
-    followUntil = Date.now() + 8000;   // a quick "yes" after Pip speaks doesn't need "Hey Pip"
     log("HEARD", r.heard, "->", (r.tools || []).map((t) => t.tool).join(",") || "-", r.action?.type || "", `${r.ms}ms (stt ${r.ms_stt}ms)`);
     act(r).catch((e) => { log("ERROR in", r.action?.type || "reply", e.message); say("Something went wrong on my side. Please try again."); });
   } catch (e) { S.serverDown = Date.now(); say("I can't reach my planner right now."); log(e); }
@@ -2030,7 +2015,7 @@ function answerLocally(heard) {
   return false;
 }
 function findKey() {   // the FIND key: ask what to find; the next thing heard is the target
-  S.findNext = Date.now(); followUntil = Date.now() + 15000;
+  S.findNext = Date.now();
   say("What should I find?");
 }
 // The brain (Qwen3-14B) answers with words + at most one action for the app.
@@ -2134,7 +2119,7 @@ async function start() {
   log("--- Pip started", new Date().toLocaleString(), "server", SERVER);
   if (!NATIVE) ac = new AudioContext();         // in the app, all sound is native
   $("start").remove();
-  say(listenMode === "always" ? "Hi, I'm Pip. I'm listening, just talk to me." : listenMode === "wake" ? "Hi, I'm Pip. Say Hey Pip when you need me." : "Hi, I'm Pip. Hold space to talk.");
+  say(NATIVE ? "Hi, I'm Pip. To talk to me, hold the bar at the bottom of the screen." : "Hi, I'm Pip. To talk to me, hold space.");
   checkServer(); setInterval(checkServer, 15000);
   fetch(SERVER + "/warmup", { method: "POST" }).then(() => checkServer()).catch(() => {});
   startSegment();   // GPS and camera stay off until the conversation needs them
@@ -2142,8 +2127,8 @@ async function start() {
     S.sim = true; onFix({ lat: +qs.get("lat"), lon: +qs.get("lon") }, 5, false);
     say("Simulated start position set. Use W to walk, A and F to turn.");
   }
-  if (NATIVE) { toNative({ type: "ready" }); showListen(); setTimeout(warmVoice, 3000); }   // the phone's mic, natively
-  else try { await startListening(); } catch (e) { log("mic:", e.message); $("listen").textContent = "MIC OFF"; }
+  if (NATIVE) { toNative({ type: "ready" }); setTimeout(warmVoice, 3000); }   // the phone's mic, natively
+  else startMic().catch((e) => log("mic:", e.message));   // ask for the laptop mic now, not on the first hold
   audioLoop();
 }
 $("start").onclick = start;
@@ -2152,13 +2137,11 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Enter") return start();
   if (!started || e.repeat || e.target.tagName === "INPUT") return;
   const k = e.key.toLowerCase();
-  if (e.code === "Space") { e.preventDefault(); chunks = []; $("say").textContent = "Listening…";
-                            (micStream ? Promise.resolve() : startListening()).then(() => { talking = true; tap("both"); }).catch((x) => log("mic:", x.message)); }
+  if (e.code === "Space") { e.preventDefault(); talkStart(); }
   else if (k === "d") describe();
   else if (k === "l") { const t = prompt("What should Pip find? (e.g. door knob)"); if (t) findStart(t); }
   else if (e.key === "Escape") { if (S.walk || S.walkTok) { S.walk = null; S.walkTok = null; say("Stopped."); render(); } else if (S.mission) { S.mission = null; say("Stopped."); render(); } else findStop("Stopped looking."); }
   else if (k === "n" && (S.mission?.phase === "through" || S.mission?.phase === "door")) lookAround("walked through a door");
-  else if (k === "h") cycleListen();
   else if (k === "b") goBack();
   else if (k === "s") saveSpot(`spot ${S.spots.length + 1}`);
   else if (k === "r") say(S.lastSpoken);
@@ -2177,8 +2160,4 @@ document.addEventListener("keydown", (e) => {
     render(); followRoute();
   }
 });
-document.addEventListener("keyup", (e) => {
-  if (e.code !== "Space") return;
-  const was = talking; talking = false;
-  if (was) { tap("both"); $("say").textContent = "Thinking…"; sendTalk(); }
-});
+document.addEventListener("keyup", (e) => { if (e.code === "Space") talkEnd(); });

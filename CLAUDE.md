@@ -9,7 +9,7 @@ This repo holds Pip: `frontend/` (the screen and app logic), `ios/` (the iPhone 
 The pen.dev file `design/untitled.pen` is the single source of truth for how Pip looks. Its screens (the code that shows each one is in `frontend/ui.js`):
 
 - **01 Start**
-- **02 Listening**, plus 02b Planner offline, 02c GPS weak, 02d Muted, 02e Looking
+- **02 Listening**, plus 02b Planner offline, 02c GPS weak, 02d Deafened, 02e Looking, 02f Talking
 - **03 Guiding**, plus 03b On course, 03c Off course, 03d Hazard, 03e Lost tracking, 03f Outdoors, 03g Arrived, 03h Paused, 03i Getting bearings, 03j Recognizing room
 - **04 Find**, plus 04b Looking around
 - **05 Setup**, plus 05b Log
@@ -18,7 +18,7 @@ The pen.dev file `design/untitled.pen` is the single source of truth for how Pip
 - **08 Search**: Restroom, 08b Grocery, 08c Looking around
 - **09 Route preview**
 
-Shared components: Status Bar, Key, Mute, Mute · On, Say Chip. The Button States frame shows how a key looks when ready, pressed, working, done and unavailable. The Motion + Gestures frame holds the motion, navigation and accessibility rules. Frame ids and each screen's fixed labels are in `design/tokens.json`.
+Shared components: Status Bar, Key, Talk, Talk · On, Deafen, Deafen · On, Voice Bar (Hold to talk · Deafen, at the bottom of every live screen), Say Chip. The Button States frame shows how a key looks when ready, pressed, working, done and unavailable. The Motion + Gestures frame holds the motion, navigation and accessibility rules. Frame ids and each screen's fixed labels are in `design/tokens.json`.
 
 - `.pen` files are encrypted. Read and edit them only through the pen.dev MCP tools (`mcp__pencil__*`), never with Read or Grep.
 - **Design first.** Any change to what Pip's screen shows goes into the design before the code: a new label, a new button, a new status line or a color. If a feature needs new UI, add it to the right screen in pen.dev, then build it.

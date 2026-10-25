@@ -40,7 +40,7 @@
   .top { display: flex; align-items: center; gap: 10px; height: 48px; flex-shrink: 0; }
   .glyph { width: 10px; height: 10px; background: var(--accent); flex-shrink: 0; }
   .glyph.bad { background: var(--bad); }
-  .glyph.live { animation: pz .83s ease-in-out infinite alternate; --low: .25; }   /* live dot; stops when muted */
+  .glyph.live { animation: pz .83s ease-in-out infinite alternate; --low: .25; }   /* live dot: blinks while the talk bar is held */
   .app { font-size: 15px; font-weight: 700; letter-spacing: 1.5px; white-space: nowrap; }
   .app.recog { animation: pz .83s ease-in-out infinite alternate; --low: .55; }   /* RECOGNIZING pulses until Pip knows the room */
   .rule { flex: 1; height: 1px; background: var(--line); min-width: 12px; }
@@ -83,18 +83,18 @@
   .key canvas.sweep { position: absolute; inset: 0; width: 100%; height: 100%; }
   .key.na { opacity: .4; }                                         /* Unavailable: dimmed, says why */
   .key.pressed { background: var(--accent); color: var(--ink); }   /* Pressed: flips to pink the instant a finger lands */
-  /* Dock (Listening): Mute · Places · Setup */
-  .dock .key, .dock #mute { height: 76px; padding: 14px; gap: 6px; flex-direction: column; justify-content: space-between; align-items: flex-start; }
-  .dock .key .ic, .dock #mute .ic { width: 20px; height: 20px; }
-  .dock .key b, .dock #mute b { font-size: 15px; letter-spacing: 1px; }
-  .krow.dock { display: grid; grid-template-columns: 1fr 1fr 1fr; }   /* three equal cells (flex would widen the padded keys) */
-  .dock .mute-slot { display: flex; min-width: 0; }
-  /* Mute: one shared control (components "Mute" / "Mute · On"); ui.js moves it into the active screen */
-  #mute { width: 100%; height: 64px; padding: 0 16px; display: flex; align-items: center; gap: 12px; background: var(--bg); color: var(--fg); }
-  #mute .ic { width: 20px; height: 20px; }
-  #mute b { font-size: 17px; font-weight: 700; letter-spacing: 1px; }
-  #mute.on { background: var(--accent); color: var(--ink); }
-  #mute.pressed { background: var(--accent); color: var(--ink); }
+  /* Dock (Listening): Places · Setup */
+  .dock .key { height: 76px; padding: 14px; gap: 6px; flex-direction: column; justify-content: space-between; align-items: flex-start; }
+  .dock .key .ic { width: 20px; height: 20px; }
+  .dock .key b { font-size: 15px; letter-spacing: 1px; }
+  .krow.dock { display: grid; grid-template-columns: 1fr 1fr; }   /* equal cells (flex would widen the padded keys) */
+  /* Voice Bar (components "Talk" / "Talk · On", "Deafen" / "Deafen · On"): one shared bar; ui.js moves it into the active screen */
+  #voicebar { display: flex; gap: 1px; }
+  #talk, #deafen { height: 64px; padding: 0 16px; display: flex; align-items: center; gap: 12px; background: var(--bg); color: var(--fg); }
+  #talk { flex: 1; min-width: 0; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }   /* held, not tapped */
+  #talk .ic, #deafen .ic { width: 20px; height: 20px; }
+  #talk b, #deafen b { font-size: 17px; font-weight: 700; letter-spacing: 1px; }
+  #talk.on, #deafen.on, #deafen.pressed { background: var(--accent); color: var(--ink); }
 
   /* Readout: KEY ········ VALUE */
   .rows { display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; }
@@ -222,7 +222,7 @@
   /* Reduce Motion: animations stop */
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
   /* Larger Text: keys stack to one column */
-  .large .krow { flex-direction: column; } .large .key { height: auto; min-height: 72px; } .large .dock .key, .large .dock #mute { min-height: 64px; }
+  .large .krow { flex-direction: column; } .large .key { height: auto; min-height: 72px; } .large .dock .key { min-height: 64px; } .large #voicebar { flex-direction: column; } .large #talk, .large #deafen { height: auto; min-height: 64px; }
 </style>
 </head>
 <body>
@@ -233,9 +233,9 @@
   <button id="start" aria-label="Start Pip"><span class="kt"><script>document.write(icon("arrow-up-right"))</script></span><b>Start</b></button>
 </section>
 
-<!-- 02 Listening, 02b Planner offline, 02c GPS weak, 02d Muted, 02e Looking -->
+<!-- 02 Listening, 02b Planner offline, 02c GPS weak, 02d Deafened, 02e Looking, 02f Talking -->
 <section class="screen" id="scr-listen">
-  <div class="top" aria-hidden="true"><i class="glyph live" id="l-glyph"></i><span class="app" id="l-app">LISTENING</span><span class="rule"></span></div>
+  <div class="top" aria-hidden="true"><i class="glyph" id="l-glyph"></i><span class="app" id="l-app">READY</span><span class="rule"></span></div>
   <div class="stage">
     <div class="prompt" aria-hidden="true">   <!-- Pip's line: not read again by VoiceOver (Pip already said it) -->
       <div class="say s64" id="say">Where to?</div><canvas class="cursor" id="l-cursor"></canvas>
@@ -253,10 +253,10 @@
       <button class="key" id="k-spot" aria-label="Save this spot"><span id="k-spot-ic"><script>document.write(icon("map-pin"))</script></span><b id="k-spot-l">Save spot</b></button>
     </div>
     <div class="krow dock">
-      <div class="mute-slot"></div>
       <button class="key" id="btn-places" aria-label="Places"><script>document.write(icon("map-pin"))</script><b>Places</b></button>
       <button class="key" id="btn-setup" aria-label="Setup"><script>document.write(icon("sliders-horizontal"))</script><b>Setup</b></button>
     </div>
+    <div class="voice-slot"></div>
   </div>
 </section>
 
@@ -281,7 +281,7 @@
       <button class="key" id="k-g1"><span id="k-g1-ic"></span><b id="k-g1-l">Pause</b></button>
       <button class="key light" id="k-g2"><span id="k-g2-ic"></span><b id="k-g2-l">Stop</b></button>
     </div>
-    <div class="mute-slot"></div>
+    <div class="voice-slot"></div>
   </div>
 </section>
 
@@ -292,7 +292,7 @@
   <div class="stage f"><div class="say s48" id="f-instr" aria-hidden="true">Looking</div></div>
   <div class="pad">
     <button class="key" id="k-stopfind"><script>document.write(icon("x"))</script><b>Stop finding</b></button>
-    <div class="mute-slot"></div>
+    <div class="voice-slot"></div>
   </div>
 </section>
 
@@ -308,7 +308,7 @@
       <button class="key" id="k-s1"><span id="k-s1-ic"></span><b id="k-s1-l">Pause</b></button>
       <button class="key light" id="k-s2"><script>document.write(icon("square"))</script><b>Stop</b></button>
     </div>
-    <div class="mute-slot"></div>
+    <div class="voice-slot"></div>
   </div>
 </section>
 
@@ -339,7 +339,7 @@
       <button class="key" id="k-tdone"><script>document.write(icon("check"))</script><b>Done</b></button>
       <button class="key" id="k-tplaces"><script>document.write(icon("list"))</script><b>Places</b></button>
     </div>
-    <div class="mute-slot"></div>
+    <div class="voice-slot"></div>
   </div>
 </section>
 
@@ -361,7 +361,7 @@
       <button class="key hot" id="k-go" aria-label="Go, take me there"><script>document.write(icon("navigation"))</script><b>Go</b></button>
       <button class="key" id="k-cancel"><script>document.write(icon("x"))</script><b>Cancel</b></button>
     </div>
-    <div class="mute-slot"></div>
+    <div class="voice-slot"></div>
   </div>
 </section>
 
@@ -384,7 +384,6 @@
   <div class="hdr"><div class="title">Setup</div></div>
   <div class="list">
     <button class="row" id="row-invert" role="switch" aria-label="Headphones flipped"><span class="k">HEADPHONES FLIPPED</span><span class="switch" id="v-invert"><i></i></span></button>
-    <button class="row" id="row-listen"><span class="k">LISTEN</span><span class="v" id="listen">ALWAYS</span><script>document.write(icon("chevron-right"))</script></button>
     <div class="row"><span class="k">CAMERA</span><span class="v" id="v-camera">–</span><script>document.write(icon("chevron-right"))</script><select id="camsel" aria-label="Camera"></select></div>
     <div class="row"><span class="k">MODELS</span><span class="v acc" id="server">–</span><script>document.write(icon("chevron-right"))</script></div>
     <label class="row"><span class="k">SERVER</span><input id="srv" aria-label="Model server" spellcheck="false" autocapitalize="off" autocorrect="off"><script>document.write(icon("chevron-right"))</script></label>
@@ -411,8 +410,11 @@
   </div>
 </section>
 
-<!-- shared: ui.js moves Mute into whichever active screen is showing -->
-<button id="mute" aria-pressed="false" aria-label="Mute Pip"><span id="mute-ic"><script>document.write(icon("mic-off"))</script></span><b id="mute-l">Mute Pip</b></button>
+<!-- shared: ui.js moves the Voice Bar (Hold to talk · Deafen) into whichever active screen is showing -->
+<div id="voicebar">
+  <button id="talk" aria-label="Hold to talk"><span id="talk-ic"><script>document.write(icon("mic"))</script></span><b id="talk-l">Hold to talk</b></button>
+  <button id="deafen" aria-pressed="false" aria-label="Deafen Pip"><span id="deafen-ic"><script>document.write(icon("headphones"))</script></span><b id="deafen-l">Deafen</b></button>
+</div>
 <video id="cam" class="offscreen" autoplay muted playsinline></video>
 
 <script src="app.js"></script>

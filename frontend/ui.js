@@ -1,6 +1,6 @@
 // Pip's screens, drawn from the pen.dev design (design/untitled.pen; colors and labels in design/tokens.json).
 // app.js does the work (voice, taps, guiding); this file only picks the screen that matches what Pip is doing,
-// fills it in 10 times a second, and wires the keys. It reads app.js's state (S, N, muted, started, ...) directly.
+// fills it in 10 times a second, and wires the keys. It reads app.js's state (S, N, talking, deafened, started, ...) directly.
 "use strict";
 (() => {
 const el = (id) => document.getElementById(id);
@@ -65,7 +65,7 @@ function initShaders() {
 // ON COURSE pulses with each tick (every 0.4 s): the tap loop's own "on" ticks drive it, so the screen and the sound agree.
 const _tap = tap;
 tap = function (side, kind, ...rest) {
-  if (kind === "on" && !muted && !reduced() && current === "guide" && el("g-tag").textContent === "ON COURSE") el("g-tag").animate([{ opacity: 1 }, { opacity: 0.7 }], { duration: 380, easing: "ease-out", fill: "forwards" });
+  if (kind === "on" && !reduced() && current === "guide" && el("g-tag").textContent === "ON COURSE") el("g-tag").animate([{ opacity: 1 }, { opacity: 0.7 }], { duration: 380, easing: "ease-out", fill: "forwards" });
   return _tap(side, kind, ...rest);
 };
 const SCREENS = ["start", "listen", "guide", "find", "search", "teach", "preview", "places", "setup", "log"];   // overlay: places | setup | log (opened by the user)
@@ -88,9 +88,9 @@ function go(name) {
   if (name === current) return;
   for (const s of SCREENS) el("scr-" + s)?.classList.toggle("on", s === name);
   current = name;
-  const slot = el("scr-" + name)?.querySelector(".mute-slot");   // Mute sits at the bottom of every active screen
-  if (slot) slot.appendChild(el("mute"));
-  el("mute").hidden = !slot;
+  const slot = el("scr-" + name)?.querySelector(".voice-slot");   // the Voice Bar sits at the bottom of every active screen
+  if (slot) slot.appendChild(el("voicebar"));
+  el("voicebar").hidden = !slot;
   if (name === "places") drawPlaces();
   if (name === "log") drawLog(true);
   window.scrollTo(0, 0);
@@ -100,7 +100,7 @@ function go(name) {
 // Pressed: flips to pink the instant a finger lands, with a light haptic and a soft tick.
 let pressedEl = null;
 document.addEventListener("pointerdown", (e) => {
-  const k = e.target.closest(".key, #mute, .place .go");
+  const k = e.target.closest(".key, #deafen, .place .go");   // the talk bar has its own hold feedback (app.js)
   if (!k || k.classList.contains("na")) return;
   pressedEl = k; k.classList.add("pressed");
   toNative({ type: "haptic" }); tap("both", "key");
@@ -135,19 +135,19 @@ let shownLine = null;
 function listen() {
   const now = Date.now();
   const down = (S.serverDown && now - S.serverDown < 60000) || (S.server && !S.server.ok);
-  let app = "LISTENING", glyph = "glyph live", line, cursor = false;
-  if (muted) { app = "MUTED"; glyph = "glyph"; line = "I'm muted"; }
-  else if (S.looking) { app = "LOOKING"; line = "Looking"; cursor = true; }
+  let app = deafened ? "DEAFENED" : "READY", glyph = "glyph", line, cursor = false;
+  if (talking) { app = "LISTENING"; glyph = "glyph live"; line = "Go ahead"; cursor = true; }
+  else if (S.looking) { app = "LOOKING"; glyph = "glyph live"; line = "Looking"; cursor = true; }
   else {
     if (down) { app = "OFFLINE"; glyph = "glyph bad"; }
-    line = S.lastSpoken && now - (S.spokeAt || 0) < 20000 ? S.lastSpoken : down ? "I can't reach my planner right now" : "Where to?";
+    line = S.lastSpoken && now - (S.spokeAt || 0) < 20000 ? S.lastSpoken : down ? "I can't reach my planner right now" : deafened ? "Voice off" : "Where to?";
     if (line.length > 110) line = firstSentence(line);
     cursor = line === "Where to?";
   }
   setText("l-app", app); setCls("l-glyph", glyph);
   if (shownLine !== line) { shownLine = line; showLine(line, cursor); }
   showEl("l-cursor", cursor);
-  showEl("l-server", Boolean(down) && !muted);
+  showEl("l-server", Boolean(down));
   // keys: LOOK works while Pip looks; LOOK and FIND need the camera
   const cam = !S.camFail, look = Boolean(S.looking);
   working("k-look", look && !reduced());
@@ -172,16 +172,16 @@ function showLine(text, cursor) {   // Pip's words type in letter by letter; the
   const step = Math.max(10, Math.min(35, 700 / text.length));   // a whole line types in under ~0.7 s
   typing = setInterval(() => { e.textContent = text.slice(0, ++i); if (i >= text.length) clearInterval(typing); }, step);
 }
-// Voice wave (wave.glsl): follows the mic level; flattens while Pip talks. Muted: flat and grey. Offline: grey.
+// Voice wave (wave.glsl): follows your voice while you hold the talk bar; flat otherwise. Offline: grey.
 const waveCols = [];
 let energy = 0;
 function drawWave(t) {
   const down = (S.serverDown && Date.now() - S.serverDown < 60000) || (S.server && !S.server.ok);
   if (GL.wave) {
     const level = NATIVE ? N.mic || 0 : micLevel;
-    const target = muted ? 0 : S.looking ? 0.35 : down ? 0.15 : speaking() ? 0 : Math.min(1, 0.12 + Math.max(0, level - 0.008) * 18);
+    const target = S.looking ? 0.35 : down ? 0.15 : talking ? Math.min(1, 0.12 + Math.max(0, level - 0.008) * 18) : 0;
     energy += (target - energy) * (target > energy ? 0.5 : 0.08);   // quick to rise, slow to fall
-    GL.wave(reduced() ? 0 : t, { u_color: vec3(muted || down ? css("--line") : css("--accent")), u_dim: vec3("#1A1C1A"), u_cols: 26, u_rows: 9, u_energy: energy });
+    GL.wave(reduced() ? 0 : t, { u_color: vec3(down ? css("--line") : css("--accent")), u_dim: vec3("#1A1C1A"), u_cols: 26, u_rows: 9, u_energy: energy });
     return;
   }
   const c = el("wave"), dpr = devicePixelRatio || 1, W = c.clientWidth, H = c.clientHeight;
@@ -190,8 +190,8 @@ function drawWave(t) {
   const g = c.getContext("2d"); if (!g) return;
   g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
   const sq = 6, gap = 2, cols = Math.floor((W + gap) / (sq + gap)), rows = 9, mid = 4, top = (H - rows * (sq + gap)) / 2;
-  const off = muted || down;
-  const level = off ? 0 : speaking() ? 0.25 + Math.random() * 0.5 : Math.min(1, (NATIVE ? N.mic || 0 : micLevel) * 12);
+  const off = down || !talking;
+  const level = off ? 0 : Math.min(1, (NATIVE ? N.mic || 0 : micLevel) * 12);
   waveCols.push(level); while (waveCols.length > cols) waveCols.shift();
   for (let x = 0; x < cols; x++) {
     const v = waveCols[x - (cols - waveCols.length)] ?? 0, a = Math.round(v * mid);
@@ -546,10 +546,9 @@ on("k-tdone", () => { S.saved = null; });
 on("k-tplaces", () => { S.saved = null; overlay = "places"; });
 on("k-go", () => previewGo());
 on("k-cancel", () => previewCancel());
-on("k-newroute", () => { overlay = null; say("Where to? Say: teach me the way to the kitchen."); followUntil = Date.now() + 15000; });
+on("k-newroute", () => { overlay = null; say("Where to? Hold the talk bar and say: teach me the way to the kitchen."); });
 on("k-plspot", () => { saveSpot(`spot ${S.spots.length + 1}`); done("k-plspot"); drawPlaces(); });
 on("row-invert", () => { localStorage.setItem("pip.invert", invert() ? "0" : "1"); });
-on("row-listen", () => cycleListen());
 on("k-viewlog", () => { overlay = "log"; });
 on("k-taps", () => {
   say("Left.");
@@ -581,11 +580,11 @@ function textSize() {
   document.body.classList.toggle("large", px > 19);
 }
 
-// Mute: "Mute" in the Listening dock, "Mute Pip" as the bar elsewhere; on = pink "Unmute"
-function muteKey() {
-  const dock = Boolean(el("mute").closest(".dock")), l = `${muted ? "Unmute" : "Mute"}${dock ? "" : " Pip"}`;
-  setText("mute-l", l); setHTML("mute-ic", icon(muted ? "mic" : "mic-off"));
-  const a = muted ? "Unmute Pip" : "Mute Pip"; if (el("mute").getAttribute("aria-label") !== a) el("mute").setAttribute("aria-label", a);
+// Voice Bar: "Hold to talk" is pink "Listening" while held; Deafen is pink "Undeafen" while on
+function voiceKeys() {
+  setText("talk-l", talking ? "Listening" : "Hold to talk");
+  setText("deafen-l", deafened ? "Undeafen" : "Deafen"); setHTML("deafen-ic", icon(deafened ? "headphone-off" : "headphones"));
+  const a = deafened ? "Undeafen Pip" : "Deafen Pip"; if (el("deafen").getAttribute("aria-label") !== a) el("deafen").setAttribute("aria-label", a);
 }
 
 // ---------- loop ----------
@@ -602,7 +601,7 @@ function tick() {
     else if (name === "places") key("k-plspot", "Save spot", "map-pin");
     else if (name === "log") drawLog(false);
   } catch (e) { if (!tick.err) { tick.err = true; log("screen error:", name, e.message); } }
-  muteKey();
+  voiceKeys();
 }
 setInterval(tick, 100);
 let waveAt = 0;
