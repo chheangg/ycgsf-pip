@@ -37,3 +37,5 @@
 - Food / break times (not in Discord)
 
 **Action:** Check kickoff slides (see links.md) and re-check Discord #announcements / the MLH Fest page / OrganizerHQ for host updates.
+
+- **4:19 PM PT (Discord #announcements, Mohak):** judging is video-only on MLH (max 3 min, one video for all tracks, no live demos). Deadlines not restated; 5:00 PM initial / 6:30 PM hard cutoff assumed to stand.
