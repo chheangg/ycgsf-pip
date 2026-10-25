@@ -1,6 +1,6 @@
 # Pip app (iPhone + screen) and design
 
-This repo holds Pip: `frontend/` (the screen and app logic), `ios/` (the iPhone app that shows `frontend/`), `server/` (the model server on the RTX 4090, reached over Tailscale), `design/` (the pen.dev design `design/untitled.pen`, its tokens and shaders) and `tools/` (the design check, shader export, and `deploy.sh`). `run.sh` serves `frontend/` on localhost. Trip recordings and trip tools live in the separate ycgsf repo (`../ycgsf-pip` on this Mac).
+This repo holds Pip: `frontend/` (the screen and app logic), `ios/` (the iPhone app that shows `frontend/`), `server/` (the model server on the RTX 4090, reached over Tailscale), `design/` (the pen.dev design `design/untitled.pen`, its tokens and shaders) and `tools/` (the design check, code check, shader export and `deploy.sh`). `run.sh` serves `frontend/` on localhost. Trip recordings and trip tools live in the separate ycgsf repo (`../ycgsf-pip` on this Mac).
 
 - **Deploy the server** with `tools/deploy.sh`: it copies `server/` to the 4090 PC over Tailscale (`hackteam@100.71.218.127`), stops every running copy of Pip there (`server/restart_pip.ps1`: the task, its restart loop, every API and both llama-servers; nothing else on that PC), restarts, and warms the models up. The previous `app.py` is kept next to it as `app.py.bak-<time>`.
 
@@ -39,19 +39,32 @@ Shared components: Status Bar, Key, Mute, Mute · On, Say Chip. The Button State
 - **On the Mac (test it yourself):** anything that doesn't need someone walking around. That covers screens, animations and layout (iOS Simulator or a browser), the design check, builds, speech and taps, server replies, and reading logs and trip recordings.
 - **On the phone (leave it to the user):** Pip's main job, which needs a person moving through a real place. That covers pathfinding, guiding, teaching and following routes, GPS walks, finding a room or a grocery aisle, obstacle warnings, ARKit/LiDAR tracking and camera finding. Don't build simulated walks or fake environments to test these. Ask the user to try it, then pull the trip recording (`tools/pull_trip.sh` in the ycgsf repo) and diagnose from the real data.
 
+## Clean code contract
+
+Checked on this Mac only. There is no GitHub CI.
+
+- **Each file has one job.** New code goes in the file whose job it matches:
+  - `frontend/app.js`: what Pip does (state, voice, guiding, server calls).
+  - `frontend/ui.js`: what the screen shows. It reads app.js's state and wires the keys; it makes no decisions.
+  - `frontend/index.html`: markup and CSS.
+  - `ios/Pip/`: one Swift file per phone service (camera, mic, voice, ARKit, SLAM map, sensors). `PipWebView.swift` is the bridge to the web code.
+  - `server/app.py`: the model server on the 4090 (conversation, speech, vision, routing). Deploy it with `tools/deploy.sh`.
+  - `tools/`: scripts run by hand (checks, shader export, deploy).
+  - Never edit generated files by hand: `frontend/shaders.js` (made by `tools/export_shaders.py`) and `graphify-out/`.
+- **Reuse before writing.** Look for an existing helper first (graphify, then grep). If the same logic would appear twice, make it one function.
+- **No dead code.** No unused functions, variables, icons or CSS, no commented-out code, no debug prints (`console.log`, Swift `print`) left in. Delete instead of commenting out; git keeps the old version. If `tools/check_code.py` flags something Claude didn't make, ask before deleting it (see the Cleanup contract).
+- **Names say what things do** (`planTo`, `showListen`). Short names are only for the app-wide objects that already exist: `S` (app state) and `N` (phone sensor data).
+- **Comments explain why, not what.** One short line for a choice that isn't obvious, with the reason or the measurement behind it. A new number that tunes behavior (a timeout, a distance, an angle) gets its unit and where the value came from.
+- **Don't hide errors.** A `catch` (Python: `except`) handles the error or logs it: `log(...)` in the app, so it lands in the trip log; `logging` in the server. Empty catches are only for cleanup that is allowed to fail (stopping audio, releasing the mic).
+- **No new dependencies without asking.** The web app is plain JavaScript with no build step and no npm; `tools/` uses only Python's standard library; the iPhone app uses only Apple frameworks; the server's packages are listed in `server/requirements.txt`.
+- **Small, focused changes.** Each change does one thing. Don't reformat or rename code the task doesn't touch. One topic per commit; the message says what changed and why.
+- **Before calling it done:** run `python3 tools/check_code.py` (it must print "clean"), `python3 tools/check_design.py` after UI changes, and an Xcode build after Swift changes. Then run `graphify update .`.
+
 ## graphify
 
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+The code graph in `graphify-out/` maps the files and functions and how they connect.
 
-Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
-- A committed graphify-out/graph.json is rewritten whole on every build, so a large diff to it in a pull request is expected. Do not flag it as churn or suggest skipping the graph rebuild or its hooks.
-
-## Using graphify on Pip (contract)
-
-- **Graph first.** Before reading or grepping code to answer a question or plan a change, run `graphify query`, `graphify path` or `graphify explain`. Open source files after that, for the exact lines.
-- **Keep it current.** After changing code, run `graphify update .`. The git commit hook does this for code only; after changing docs (README, CLAUDE.md, docs/), run `/graphify --update`.
-- **What it skips:** graphify skips `design/tokens.json` because the word "tokens" looks like a secret to it. That file is not secret; read it directly.
+- **Graph first.** Before reading or grepping code to answer a question or plan a change, run `graphify query "<question>"`, `graphify path "<A>" "<B>"` or `graphify explain "<concept>"`. Open source files after that, for the exact lines. Read `graphify-out/GRAPH_REPORT.md` only for a broad architecture review.
+- **Keep it current.** After changing code, run `graphify update .` (the git commit hook also does this for code). After changing docs (README, CLAUDE.md, docs/), run `/graphify --update`.
+- **Big diffs are expected.** `graphify-out/graph.json` is rewritten whole on every build. Don't flag it as churn or suggest skipping the rebuild or its hooks.
+- **What it skips:** `design/tokens.json`, because the word "tokens" looks like a secret to it. That file is not secret; read it directly.
