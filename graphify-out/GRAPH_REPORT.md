@@ -1,145 +1,201 @@
 # Graph Report - ycgsf-pip  (2026-10-25)
 
 ## Corpus Check
-- 18 files · ~45,867 words
+- 21 files · ~61,572 words
 - Verdict: corpus is large enough that graph structure adds value.
+- Unclassified: 14 file(s) not represented in the graph (top: .glsl 5, (none) 3, .pen 1)
 
 ## Summary
-- 488 nodes · 1209 edges · 16 communities (15 shown, 1 thin omitted)
-- Extraction: 95% EXTRACTED · 5% INFERRED · 0% AMBIGUOUS · INFERRED: 62 edges (avg confidence: 0.84)
+- 674 nodes · 1736 edges · 27 communities (22 shown, 5 thin omitted)
+- Extraction: 95% EXTRACTED · 5% INFERRED · 0% AMBIGUOUS · INFERRED: 88 edges (avg confidence: 0.84)
 - Token cost: 0 input · 0 output
 
+## Graph Freshness
+- Built from commit: `918dac1f`
+- Run `git rev-parse HEAD` and compare to check if the graph is stale.
+- Run `graphify update .` after code changes (no API cost).
+
 ## Community Hubs (Navigation)
-- Assistant actions and replies
-- Phone sensors bridge
-- Screens and design rules
-- ARKit tracking
-- App state and speech rules
-- Project contracts
-- Camera and depth
-- Apple frameworks
-- Native voice and audio
-- SLAM map
-- Route geometry
-- GPS and direction cues
-- Route recording and following
-- Find mode
-- Audio loop and server
-- Guidance cues
+- Models
+- index.html (Pip screen markup and styles)
+- app.js
+- ui.js
+- Camera
+- ARSense
+- learnEnd
+- slamMap
+- Voice
+- locate
+- SlamMap
+- post
+- say
+- replayPoints
+- app.py
+- Sensors
+- render
+- panorama
+- replan
+- locate
+- llm
+- PipWebView.swift
+- Bridge
+- Mic
+- .write
+- PipWebView
+- re
 
 ## God Nodes (most connected - your core abstractions)
-1. `say()` - 57 edges
-2. `log()` - 34 edges
+1. `say()` - 63 edges
+2. `log()` - 44 edges
 3. `ARSense` - 34 edges
 4. `render()` - 29 edges
 5. `Sensors` - 26 edges
 6. `Voice` - 26 edges
-7. `Camera` - 23 edges
-8. `act()` - 20 edges
-9. `SlamMap` - 20 edges
-10. `roomDist()` - 19 edges
+7. `slamMap()` - 24 edges
+8. `Camera` - 23 edges
+9. `act()` - 22 edges
+10. `lookAround()` - 21 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `magicTap()` --implements--> `Motion + Gestures accessibility rules (VoiceOver labels, Magic Tap, Z-scrub, Reduce Motion, Larger Text)`  [INFERRED]
-  frontend/ui.js → CLAUDE.md
 - `Testing contract: Mac vs phone` --references--> `ARSense`  [INFERRED]
   CLAUDE.md → ios/Pip/ARSense.swift
 - `PipWebView` --references--> `index.html (Pip screen markup and styles)`  [INFERRED]
   ios/Pip/PipWebView.swift → frontend/index.html
-- `Trip recordings (trips/)` --conceptually_related_to--> `Trip`  [INFERRED]
+- `Trip recordings (trips/: sensors, photos, floor map)` --conceptually_related_to--> `Trip`  [INFERRED]
   CLAUDE.md → ios/Pip/PipWebView.swift
-- `setup()` --references--> `05 Setup screen (#scr-setup)`  [INFERRED]
-  frontend/ui.js → frontend/index.html
+- `Names say what things do` --references--> `N`  [EXTRACTED]
+  CLAUDE.md → frontend/app.js
+- `Don't hide errors` --references--> `log()`  [EXTRACTED]
+  CLAUDE.md → frontend/app.js
 
 ## Import Cycles
 - None detected.
 
 ## Hyperedges (group relationships)
-- **Design contract pipeline: pen.dev file to tokens to CSS, verified by the design check** — claude_untitled_pen, claude_design_tokens, frontend_index_css_tokens, claude_check_design_py, tools_check_design [EXTRACTED 1.00]
-- **Accessibility contract implemented across web and native (Reduce Motion, Larger Text, Magic Tap, Z-scrub)** — claude_accessibility_rules, frontend_index_reduce_motion, frontend_index_larger_text, frontend_ui_magictap, ios_pip_pipwebview_pipwkwebview_accessibilityperformmagictap, ios_pip_pipwebview_pipwkwebview_accessibilityperformescape [INFERRED 0.85]
+- **Before-done verification gate (code check, design check, graph update)** — claude_definition_of_done, claude_check_code_py, claude_check_design_py, claude_graphify_contract [EXTRACTED 1.00]
+- **Pip guidance pipeline (hear, decide, plan, guide, speak)** — readme_speech_to_text, readme_brain_qwen3_14b, readme_long_term_planner, readme_short_term_planner, readme_tap_guidance, readme_kokoro_82m [EXTRACTED 1.00]
+- **Open-weight models served on one RTX 4090** — readme_brain_qwen3_14b, readme_qwen2_5_vl_7b, readme_speech_to_text, readme_kokoro_82m, readme_yolo11n, readme_depth_anything_v2, readme_owlv2 [EXTRACTED 1.00]
 - **iOS app bundles and shows the web frontend** — ios_project_pip_target, ios_pip_pipwebview_pipwebview, frontend_index, frontend_ui, frontend_app [INFERRED 0.85]
 
-## Communities (16 total, 1 thin omitted)
+## Communities (27 total, 5 thin omitted)
 
-### Community 0 - "Assistant actions and replies"
-Cohesion: 0.10
-Nodes (65): act(), answerLocally(), askNative(), askPip(), atSign(), b64ToBlob(), backtrack(), describe() (+57 more)
-
-### Community 1 - "Phone sensors bridge"
-Cohesion: 0.05
-Nodes (17): PipApp, .body, PipView, .body, Bridge, LogFile, PipWebView, PipWKWebView (+9 more)
-
-### Community 2 - "Screens and design rules"
+### Community 0 - "Models"
 Cohesion: 0.06
-Nodes (52): Button States frame (ready, pressed, working, done, unavailable), Pip design screens (01 Start through 09 Route preview), Motion + Gestures frame, Shared design components (Status Bar, Key, Mute, Mute · On, Say Chip), design/untitled.pen (pen.dev design file), frame(), Key state styles (pressed, work, done, na), Larger Text layout (.large stacks keys) (+44 more)
+Nodes (46): ARKit, AVFoundation, Pip model server (server/ on the RTX 4090, reached over Tailscale), CoreImage, CoreLocation, CoreMotion, Foundation, project.yml (XcodeGen spec for the Pip iOS app) (+38 more)
 
-### Community 3 - "ARKit tracking"
+### Community 1 - "index.html (Pip screen markup and styles)"
+Cohesion: 0.06
+Nodes (27): CLAUDE.md (Pip project instructions), tools/check_code.py code check (must print "clean"), tools/check_design.py design check (must print "matches"), Design tokens (design/tokens.json, CSS variables --bg, --fg, --accent), Motion + Gestures frame, tools/pull_trip.sh (ycgsf repo), Trip recordings (trips/: sensors, photos, floor map), design/untitled.pen (pen.dev design file) (+19 more)
+
+### Community 2 - "app.js"
+Cohesion: 0.07
+Nodes (43): askPip(), audioLoop(), checkServer(), chunks, cycleListen(), EXIT_WORDS, fallbackVoice(), HAND_WORDS (+35 more)
+
+### Community 3 - "ui.js"
+Cohesion: 0.09
+Nodes (44): Button States frame (ready, pressed, working, done, unavailable), Pip design screens (01 Start through 09 Route preview), Shared design components (Status Bar, Key, Mute, Mute · On, Say Chip), frame(), Key state styles (pressed, work, done, na), Shared Mute button (#mute), Say Chip (.chip), Say type scale (.s64 to .s26) (+36 more)
+
+### Community 4 - "Camera"
+Cohesion: 0.12
+Nodes (3): Camera, .jpeg, Depth
+
+### Community 5 - "ARSense"
 Cohesion: 0.08
 Nodes (12): ARSense, .depth, .frameId, .jpeg, .mapping, .mapsDir, .pose, .supported (+4 more)
 
-### Community 4 - "App state and speech rules"
-Cohesion: 0.07
-Nodes (31): chunks, cycleListen(), HAND_WORDS, LISTEN_LABEL, logLines, N, NATIVE, nativeSpeech (+23 more)
+### Community 6 - "learnEnd"
+Cohesion: 0.21
+Nodes (13): endSegment(), followRoute(), goalOf(), learnEnd(), learnTick(), legDist(), meters(), missionStart() (+5 more)
 
-### Community 5 - "Project contracts"
+### Community 7 - "slamMap"
+Cohesion: 0.15
+Nodes (30): aRoom(), askNative(), atSign(), backtrack(), giveUp(), goToSign(), hopCheck(), hopDone() (+22 more)
+
+### Community 9 - "locate"
 Cohesion: 0.09
-Nodes (16): CLAUDE.md (Pip project instructions), tools/check_design.py design check, Design tokens (design/tokens.json), Pip model server, tools/pull_trip.sh (ycgsf repo), Trip recordings (trips/), ycgsf repo (../ycgsf-pip: model server, trips, trip tools), icon() (+8 more)
+Nodes (50): angleDiff(), backCue(), bearing(), buildPath(), circMean(), compassNow(), cue(), currentDirection() (+42 more)
 
-### Community 6 - "Camera and depth"
-Cohesion: 0.11
-Nodes (3): Camera, .jpeg, Depth
-
-### Community 7 - "Apple frameworks"
-Cohesion: 0.09
-Nodes (10): ARKit, AVFoundation, CoreImage, CoreLocation, CoreMotion, Foundation, Mic, simd (+2 more)
-
-### Community 9 - "SLAM map"
+### Community 10 - "SlamMap"
 Cohesion: 0.14
 Nodes (8): Cell, free, occupied, unknown, Door, Frontier, SlamMap, .knownCells
 
-### Community 10 - "Route geometry"
+### Community 11 - "post"
+Cohesion: 0.27
+Nodes (6): device(), get(), health(), local(), scan(), warmup()
+
+### Community 12 - "say"
+Cohesion: 0.15
+Nodes (34): act(), answerLocally(), b64ToBlob(), describe(), ensureCamera(), ensureGPS(), findCue(), findKey() (+26 more)
+
+### Community 13 - "replayPoints"
+Cohesion: 0.31
+Nodes (9): arReady(), doneChime(), orient(), relativeAlign(), replay(), replayPoints(), replayTimed(), routesStore() (+1 more)
+
+### Community 14 - "app.py"
+Cohesion: 0.14
+Nodes (14): _bearing(), find_places(), geocode(), get_route(), LatLon, maps_link(), _meters(), plan() (+6 more)
+
+### Community 16 - "render"
 Cohesion: 0.18
-Nodes (19): angleDiff(), bearing(), buildPath(), circMean(), deg(), gpsWhere(), hazardCheck(), keypoints() (+11 more)
+Nodes (20): doorBlocked(), doorHow(), doorStep(), doorThrough(), doorWait(), doorWaitStart(), endLeg(), HANDLE_LABELS (+12 more)
 
-### Community 11 - "GPS and direction cues"
-Cohesion: 0.24
-Nodes (19): compassNow(), currentDirection(), distWords(), gpsCue(), gpsGood(), gpsLeg(), instruct(), legGeom() (+11 more)
-
-### Community 12 - "Route recording and following"
+### Community 17 - "panorama"
 Cohesion: 0.21
-Nodes (15): dist(), endSegment(), followRoute(), learnEnd(), learnTick(), legDist(), meters(), onFix() (+7 more)
+Nodes (7): _json(), panorama(), describe_view(), place_of(), plain_target(), turn_phrase(), wrong_place()
 
-### Community 13 - "Find mode"
-Cohesion: 0.24
-Nodes (12): arReady(), doneChime(), findCue(), findStep(), findStop(), findSweep(), note(), orient() (+4 more)
+### Community 18 - "replan"
+Cohesion: 0.21
+Nodes (7): check_room(), confirm(), describe(), door(), door_words(), replan(), see()
 
-### Community 14 - "Audio loop and server"
-Cohesion: 0.33
-Nodes (9): audioLoop(), checkServer(), fallbackVoice(), invert(), playLine(), speakNow(), start(), tap() (+1 more)
+### Community 19 - "locate"
+Cohesion: 0.15
+Nodes (7): _crop(), _drop_lookalikes(), _iou(), locate(), same_thing(), _stem(), tts()
 
-### Community 15 - "Guidance cues"
-Cohesion: 0.28
-Nodes (9): backCue(), cue(), guiding(), missionCue(), navCue(), offTap(), slamNext(), thinking() (+1 more)
+### Community 20 - "llm"
+Cohesion: 0.22
+Nodes (6): backtrack(), BacktrackRequest, chat(), decide_slam(), llm(), SlamDecision
+
+### Community 21 - "PipWebView.swift"
+Cohesion: 0.15
+Nodes (10): PipApp, .body, PipView, .body, LogFile, Screen, .body, MapKit (+2 more)
+
+### Community 25 - "PipWebView"
+Cohesion: 0.26
+Nodes (3): PipWebView, PipWKWebView, ScreenPreview
+
+### Community 26 - "re"
+Cohesion: 0.29
+Nodes (4): agent(), names_a_location(), run_tool(), talk()
+
+## Ambiguous Edges - Review These
+- `Model server Python requirements` → `Kokoro-82M voice (af_heart, kokoro-onnx, /tts)`  [AMBIGUOUS]
+  server/requirements.txt · relation: references
+- `YOLO11n object detector` → `Arrival check (room proof in 3 frames + vision model agrees)`  [AMBIGUOUS]
+  README.md · relation: references
 
 ## Knowledge Gaps
-- **27 isolated node(s):** `Vision`, `.supported`, `.jpeg`, `.depth`, `.tracking` (+22 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 113 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **1 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **29 isolated node(s):** `Vision`, `.supported`, `.jpeg`, `.depth`, `.tracking` (+24 more)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 153 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **5 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `index.html (Pip screen markup and styles)` connect `Project contracts` to `Phone sensors bridge`, `Screens and design rules`, `App state and speech rules`?**
-  _High betweenness centrality (0.525) - this node is a cross-community bridge._
+- **Why does `index.html (Pip screen markup and styles)` connect `index.html (Pip screen markup and styles)` to `Models`, `PipWebView`, `app.js`, `ui.js`?**
+  _High betweenness centrality (0.184) - this node is a cross-community bridge._
 - **Are the 5 inferred relationships involving `ARSense` (e.g. with `Testing contract: Mac vs phone` and `SlamMap`) actually correct?**
   _`ARSense` has 5 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `Vision`, `.supported`, `.jpeg` to the rest of the system?**
-  _27 weakly-connected nodes found - possible documentation gaps or missing edges._
-- **Should `Assistant actions and replies` be split into smaller, more focused modules?**
-  _Cohesion score 0.09663461538461539 - nodes in this community are weakly interconnected._
-- **Why does `Sensors` connect `Phone sensors bridge` to `ARKit tracking`, `Project contracts`, `Camera and depth`, `Apple frameworks`, `Native voice and audio`?**
-  _High betweenness centrality (0.338) - this node is a cross-community bridge._
-- **Are the 6 inferred relationships involving `Sensors` (e.g. with `PipView` and `.userContentController()`) actually correct?**
-  _`Sensors` has 6 INFERRED edges - model-reasoned connections that need verification._
-- **Should `Phone sensors bridge` be split into smaller, more focused modules?**
-  _Cohesion score 0.05222734254992319 - nodes in this community are weakly interconnected._
+  _29 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Should `Models` be split into smaller, more focused modules?**
+  _Cohesion score 0.05673076923076923 - nodes in this community are weakly interconnected._
+- **Why does `ARSense` connect `ARSense` to `Models`, `index.html (Pip screen markup and styles)`, `SlamMap`, `Sensors`?**
+  _High betweenness centrality (0.180) - this node is a cross-community bridge._
+
+### Low-confidence Hints
+_AMBIGUOUS edges — the extractor was unsure. Verify before acting on these._
+
+- **What is the exact relationship between `Model server Python requirements` and `Kokoro-82M voice (af_heart, kokoro-onnx, /tts)`?**
+  _Edge tagged AMBIGUOUS (relation: references) - confidence is low._
+- **What is the exact relationship between `YOLO11n object detector` and `Arrival check (room proof in 3 frames + vision model agrees)`?**
+  _Edge tagged AMBIGUOUS (relation: references) - confidence is low._
