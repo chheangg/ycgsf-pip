@@ -93,7 +93,7 @@ Verified pilot values:
 | Mira Mesa #6679 | Aisle 40, Bay 015 |
 | Mission Valley #6910 | HTTP 404 — no verified location |
 
-For product-name lookup, the [Unwrangle search endpoint](https://docs.unwrangle.com/homedepot-search-results-api/) accepts `platform=homedepot_search` and `search=<keywords>`, plus store number and ZIP. Its results contain `name` and `id`; the selected result's `id` becomes `item_id` for aisle lookup. Select the exact variant when keywords match multiple products. Keyword search is exposed as a model tool and tested with mocked responses; live keyword search has not been run, and it has not been added to the CLI.
+For product-name lookup, the [Unwrangle search endpoint](https://docs.unwrangle.com/homedepot-search-results-api/) accepts `platform=homedepot_search` and `search=<keywords>`, plus store number and ZIP. Its results contain `name` and `id`; the selected result's `id` becomes `item_id` for aisle lookup. Select the exact variant when keywords match multiple products. Live search followed by location lookup through `run_tool()` passed on October 25, 2026: product `312504067` at Carmel Mtn `0669` returned `Aisle 33, Bay 006`. Live model selection remains unverified. Keyword search is not exposed in the CLI.
 
 Offline tests cover pagination, deduplication, resumption, request limits, response validation, and failure handling:
 
