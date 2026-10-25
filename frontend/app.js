@@ -36,6 +36,7 @@ const S = {
   trail: [], seg: null, spots: [], crumbs: [], back: null,
   find: null,   // {target, move, size, saidAt, lastSay, seenAt, gotAt}
   learning: null, // {name, start, trailIdx}: recording a route to teach Pip (works indoors)
+  mission: null,  // go_to_room: {room, via, proof, phase: scan|orient|approach|through|verify|arrive, ...}
 };
 
 // ---------- 1. AUDIO: tip-tap with swapped channels ----------
@@ -60,6 +61,7 @@ function tap(side, kind = "tap") {
 // What the taps should be doing right now: {side, interval (s), kind} or null for silence.
 function cue() {
   if (S.paused) return null;
+  if (S.mission) return missionCue();
   if (!guiding() && !S.find) S.hint = "clear";
   if (S.find) return findCue();
   if (S.hint === "stop") return { side: "both", interval: 0.25, kind: "stop" };
@@ -78,13 +80,29 @@ function audioLoop() {
   if (!c) nextTap = 0;
   requestAnimationFrame(audioLoop);
 }
+// Pip's voice: Kokoro-82M on the 4090 (natural), browser voice if the server is slow or down.
+let voiceSrc = null, voiceChain = Promise.resolve(), speakingUntil = 0;
+const speaking = () => performance.now() < speakingUntil || speechSynthesis.speaking;
 function say(text, { interrupt = true } = {}) {
   if (!text) return;
   S.lastSpoken = text; $("say").textContent = text; log("SAY", text);
-  if (interrupt) speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  u.rate = 1.1;
-  speechSynthesis.speak(u);
+  if (interrupt) { try { voiceSrc?.stop(); } catch {} speechSynthesis.cancel(); voiceChain = Promise.resolve(); }
+  voiceChain = voiceChain.then(() => speakNow(text)).catch(() => {});
+}
+async function speakNow(text) {
+  try {
+    const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 2500);
+    const buf = await (await fetch(`${SERVER}/tts?text=${encodeURIComponent(text)}`, { signal: ctl.signal })).arrayBuffer();
+    clearTimeout(t);
+    const audio = await ac.decodeAudioData(buf);
+    await new Promise((res) => {
+      const src = ac.createBufferSource(); src.buffer = audio; src.connect(ac.destination);
+      src.onended = res; voiceSrc = src; src.start();
+      speakingUntil = performance.now() + audio.duration * 1000 + 250;
+    });
+  } catch {
+    await new Promise((res) => { const u = new SpeechSynthesisUtterance(text); u.rate = 1.1; u.onend = res; u.onerror = res; speechSynthesis.speak(u); });
+  }
 }
 
 // ---------- 2. GPS (Chrome uses Google's location service) + memory ----------
@@ -148,7 +166,11 @@ function followRoute() {
   if (!step) return;
   const d = dist(S.pos, step), key = (k) => `${S.stepIdx}:${k}`;
   const turnWord = step.turn === "left" ? "turn left" : step.turn === "right" ? "turn right" : "continue";
-  if (step.turn === "arrive" && d < 12) { say(`You've arrived at ${S.route.name}.`); S.route = null; return render(); }
+  if (step.turn === "arrive" && d < 15) {   // GPS gets you close; the camera does the last few meters
+    const name = S.route.name; S.route = null; render();
+    say(`We're at ${name}. Now I'll find the entrance with the camera.`);
+    return missionStart(`entrance of ${name}`, "door", ["entrance", "door", "doorway"]);
+  }
   if (d < 40 && d > 15 && !S.spokenFor[key("pre")] && step.turn !== "straight") {
     S.spokenFor[key("pre")] = 1; say(`In ${Math.round(d / 10) * 10} meters, ${turnWord}${step.name ? ` onto ${step.name}` : ""}.`);
   }
@@ -241,6 +263,120 @@ function replay(name) {
   say(`Starting from ${all[key].start}. Walk straight about ${first.seconds} seconds.`, { interrupt: false });
 }
 
+// ---------- GO TO A ROOM: door -> line up -> walk -> through -> verify (done only on proof) ----------
+const sideOf = (dx) => (dx < 0 ? "left" : "right");
+function missionStart(room, via, proof) {
+  ensureCamera();
+  S.find = null; S.route = null; S.back = null;
+  S.mission = { room, via: via || "door", proof: proof || ["toilet", "sink"], phase: "plan", phaseAt: Date.now(),
+                door: null, doorAt: 0, proofHit: null, proofAt: 0, saidAt: 0, lastSay: "", tries: 0, history: [], planning: false };
+  missionReplan("start");
+}
+// At every landmark (start, door reached, lost, wrong room) Pip looks and re-plans the next sub-goal.
+async function missionReplan(why) {
+  const m = S.mission; if (!m || m.planning) return;
+  m.planning = true; m.phase = "plan"; render();
+  try {
+    const r = await lookAndPlan(m.room, [...m.history, why]);
+    if (!S.mission) return;
+    const p = r?.plan || {};
+    m.history.push(`${why}: saw ${r?.scene?.summary || "?"}; next ${p.target || p.search}`);
+    if (p.reached) { m.phase = "verify"; m.phaseAt = Date.now(); say(p.say || `Checking if this is the ${m.room}.`); return; }
+    if (p.action === "open_door" || (p.action === "walk" && /door|doorway/.test(why))) {   // go through, then look again
+      say(p.say, { interrupt: false }); m.phase = "through"; m.phaseAt = Date.now(); render(); return;
+    }
+    m.via = (p.search || "door").toLowerCase(); m.target = p.target || m.via;
+    m.door = null; m.doorAt = 0;
+    say(p.say || `Let's find a ${m.via}.`, { interrupt: false });
+    mPhase("scan");
+  } catch (e) { log("replan failed", e); m.via = "door"; mPhase("scan", "Turn slowly, I'm looking for a door."); }
+  finally { if (S.mission) S.mission.planning = false; }
+}
+function mSay(text, every = 3000) {
+  const m = S.mission;
+  if (text !== m.lastSay || Date.now() - m.saidAt > every) { say(text, { interrupt: true }); m.lastSay = text; m.saidAt = Date.now(); }
+}
+function mPhase(phase, text) { const m = S.mission; m.phase = phase; m.phaseAt = Date.now(); if (text) mSay(text, 0); log("mission:", phase); render(); }
+function missionCue() {
+  const m = S.mission, t = Date.now();
+  const target = m.phase === "arrive" ? m.proofHit : m.door;
+  const fresh = target && t - (m.phase === "arrive" ? m.proofAt : m.doorAt) < 1500;
+  if (S.hint === "stop" && (m.phase === "approach")) return { side: "both", interval: 0.25, kind: "stop" };
+  if (!fresh) return null;
+  if (m.phase === "orient" || m.phase === "arrive") {
+    if (Math.abs(target.dx) > 0.12) return { side: sideOf(target.dx), interval: 0.35, kind: "tap" };
+    return { side: "both", interval: 0.6, kind: "got" };
+  }
+  if (m.phase === "approach" && Math.abs(target.dx) > 0.15) return { side: sideOf(target.dx), interval: 0.6, kind: "tap" };
+  return null;
+}
+async function missionStep(blob) {
+  const m = S.mission;
+  if (m.planning || m.phase === "plan") return;
+  const labels = [m.via, ...m.proof].join(",");
+  const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("labels", labels);
+  const r = await (await fetch(SERVER + "/scan", { method: "POST", body: fd })).json();
+  if (!S.mission) return;
+  const t = Date.now(), door = r.hits[m.via];
+  const proof = m.proof.map((p) => r.hits[p] && { name: p, ...r.hits[p] }).filter((h) => h && h.score >= (m.proof.includes(m.room) ? 0.15 : 0.2)).sort((a, b) => b.score - a.score)[0];
+  if (door && door.score >= 0.15) { m.door = door; m.doorAt = t; }
+  $("clear").textContent = `${m.phase} · door ${door ? Math.round(door.score * 100) + "%" : "-"} · ${proof ? proof.name : "no proof"} · ${r.ms} ms`;
+  $("clear").className = "v " + (proof ? "ok" : "warn");
+
+  // Proof of the room beats everything: that's the only way to finish.
+  if (proof && (m.phase === "verify" || m.phase === "through" || proof.score >= 0.3)) {
+    m.proofHit = proof; m.proofAt = t;
+    const isRoom = !m.proof.includes(m.room);   // a room is proven by what's in it; a target by itself
+    if (m.phase !== "arrive") mPhase("arrive", isRoom ? `This is the ${m.room}: I can see a ${proof.name}${Math.abs(proof.dx) > 0.12 ? ` to your ${sideOf(proof.dx)}` : " ahead"}.`
+                                                      : `I see the ${proof.name}${Math.abs(proof.dx) > 0.12 ? ` to your ${sideOf(proof.dx)}` : " straight ahead"}. Walk toward it slowly.`);
+    if (Math.abs(proof.dx) <= 0.12 && proof.size > (isRoom ? 0.08 : 0.25)) {
+      say(isRoom ? `You're in the ${m.room}. The ${proof.name} is right in front of you.` : `The ${proof.name} is right in front of you. Reach forward.`);
+      S.mission = null; render();
+    }
+    return;
+  }
+  const since = t - m.phaseAt, seeDoor = t - m.doorAt < 1500;
+  switch (m.phase) {
+    case "scan":
+      if (seeDoor) return mPhase("orient", `I see the ${m.target || m.via}.`);
+      if (since > 20000) { m.tries++; return missionReplan(`couldn't find ${m.via} after turning`); }
+      return mSay(`Turn slowly, I'm looking for the ${m.target || m.via}.`, 6000);
+    case "orient":
+      if (!seeDoor && since > 2000) return mPhase("scan", `Lost it. Turn slowly.`);
+      if (seeDoor && Math.abs(m.door.dx) > 0.12) return mSay(`${sideOf(m.door.dx)} ${sideOf(m.door.dx)}`, 1500);
+      if (seeDoor) return mPhase("approach", `It's straight ahead. Walk forward slowly.`);
+      return;
+    case "approach":
+      if (!seeDoor && since > 4000) return missionReplan(`lost sight of the ${m.via} while walking`);
+      if (seeDoor && m.door.size > 0.3) {
+        return missionReplan(`standing right at the ${m.target || m.via}`);   // look at it and coach the next move
+      }
+      if (seeDoor && Math.abs(m.door.dx) > 0.15) return mSay(`a bit ${sideOf(m.door.dx)}`, 2500);
+      return;
+    case "through":
+      if (since > 10000) return missionReplan("went through the door");
+      return;
+    case "verify":
+      if (since > 14000) {
+        m.tries++;
+        if (m.tries >= 3) { say(`I couldn't find the ${m.room}. Want to teach me the way once, so I know it next time?`); S.mission = null; return render(); }
+        return missionReplan(`this room is not the ${m.room}; need another way`);
+      }
+      return;
+  }
+}
+
+// ---------- LOOK AND PLAN: the vision model reads the scene, the brain picks the next landmark ----------
+async function lookAndPlan(goal, history = []) {
+  await ensureCamera();
+  const blob = lastFrame || (await frameBlob());
+  if (!blob) { say("The camera isn't on."); return null; }
+  const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("goal", goal); fd.append("history", JSON.stringify(history.slice(-6)));
+  const r = await (await fetch(SERVER + "/replan", { method: "POST", body: fd })).json();
+  log("look:", r.scene?.summary || "", "->", JSON.stringify(r.plan), `${r.ms}ms (see ${r.ms_see}ms)`);
+  return r;
+}
+
 // ---------- FIND IT: "left left", "up up" to guide a hand to an object ----------
 function findStart(target, quiet = false) {
   if (!target) return say("What should I find?");
@@ -280,7 +416,7 @@ function ensureCamera() {
   if (!camOn) camOn = startCamera().then(() => localLoop()).catch((e) => { log("camera:", e.message); camOn = null; });
   return camOn;
 }
-const guiding = () => Boolean(S.route || S.back || S.learning);
+const guiding = () => Boolean(S.route || S.back || S.learning || S.mission);
 async function startCamera(deviceId) {
   // Widest view the camera offers: full HD, minimum zoom (many laptop/USB cams default to a cropped 640x480).
   const base = { width: { ideal: 1920 }, height: { ideal: 1080 }, ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: "environment" }) };
@@ -304,7 +440,11 @@ async function frameBlob() {
 async function localLoop() {
   if (!busy && !S.paused && (S.find || guiding())) {
     const blob = await frameBlob();
-    if (blob && S.find) {
+    if (blob && S.mission) {
+      busy = true; lastFrame = blob;
+      try { await missionStep(blob); } catch (e) { $("clear").textContent = "no model"; }
+      busy = false;
+    } else if (blob && S.find) {
       busy = true; lastFrame = blob;
       try { await findStep(blob); } catch (e) { $("clear").textContent = "no model"; }
       busy = false;
@@ -344,6 +484,31 @@ async function startMic() {
   micNode.onaudioprocess = (e) => { if (talking) chunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
   mic.connect(micNode); micNode.connect(ac.destination);
 }
+// Always-on listening: cut speech out of the mic stream by loudness, send each phrase to Whisper on the
+// 4090. Only phrases starting with "Hey Pip" (or right after Pip spoke) reach the brain.
+let alwaysOn = true, vad = { on: false, quietMs: 0, speechMs: 0, floor: 0.01, buf: [] }, followUntil = 0;
+async function startListening() {
+  await startMic();
+  micNode.onaudioprocess = (e) => {
+    const x = e.inputBuffer.getChannelData(0), ms = (x.length / ac.sampleRate) * 1000;
+    if (talking) { chunks.push(new Float32Array(x)); return; }          // Space push-to-talk wins
+    if (!alwaysOn || speaking()) { vad.on = false; vad.buf = []; return; }  // don't hear Pip itself
+    let e2 = 0; for (let i = 0; i < x.length; i++) e2 += x[i] * x[i];
+    const rms = Math.sqrt(e2 / x.length), loud = rms > Math.max(0.012, vad.floor * 3);
+    if (!vad.on) vad.floor = vad.floor * 0.98 + rms * 0.02;              // track background noise
+    if (loud) { vad.speechMs += ms; vad.quietMs = 0; } else vad.quietMs += ms;
+    if (!vad.on && vad.speechMs > 120) { vad.on = true; }
+    if (vad.on || loud) vad.buf.push(new Float32Array(x));
+    if (!vad.on && !loud) { vad.speechMs = 0; vad.buf = vad.buf.slice(-3); }   // keep a little pre-roll
+    const total = vad.buf.length * ms;
+    if (vad.on && (vad.quietMs > 700 || total > 9000)) {
+      const phrase = vad.buf; vad = { ...vad, on: false, quietMs: 0, speechMs: 0, buf: [] };
+      const pcm = to16k(phrase, ac.sampleRate);
+      if (pcm.length > 8000) askPip({ body: pcm.buffer, wake: true });
+    }
+  };
+  $("listen").textContent = "listening for “Hey Pip”"; $("listen").className = "v ok";
+}
 function stopMic() {
   micStream?.getTracks().forEach((t) => t.stop());
   try { mic?.disconnect(); micNode?.disconnect(); } catch {}
@@ -369,10 +534,14 @@ function status() {
            taught_routes: Object.keys(routesStore()), hazards: S.hazards.map((h) => `${h.label} ${h.side}`),
            learning: S.learning?.name || null };
 }
-async function askPip({ body, text }) {
-  const url = `${SERVER}/talk?session=${SESSION}&ctx=${encodeURIComponent(JSON.stringify(status()))}` + (text ? `&text=${encodeURIComponent(text)}` : "");
+async function askPip({ body, text, wake = false }) {
+  const url = `${SERVER}/talk?session=${SESSION}&ctx=${encodeURIComponent(JSON.stringify(status()))}` + (text ? `&text=${encodeURIComponent(text)}` : "") +
+              (wake ? `&wake=1&followup=${Date.now() < followUntil ? 1 : 0}` : "");
   try {
     const r = await (await fetch(url, { method: "POST", body: body || "" })).json();
+    if (r.ignored) { log("(not for Pip)", r.heard); return; }
+    if (r.awake) tap("both", "got");
+    followUntil = Date.now() + 8000;   // a quick "yes" after Pip speaks doesn't need "Hey Pip"
     log("HEARD", r.heard, "->", (r.tools || []).map((t) => t.tool).join(",") || "-", r.action?.type || "", `${r.ms}ms (stt ${r.ms_stt}ms)`);
     act(r);
   } catch (e) { say("I can't reach my planner right now."); log(e); }
@@ -385,7 +554,10 @@ async function act(r) {
   switch (a.type) {
     case "navigate": return startRoute(a.route);
     case "find": return findStart(a.target, true);
+    case "mission": return missionStart(a.room, a.via, a.proof);
     case "describe": return describe("What's around me?", false);
+    case "gps_on": ensureGPS(); return;
+    case "look": { const r = await lookAndPlan(a.goal || "where I want to go"); if (r) say(r.plan.say, { interrupt: false }); return; }
     case "where": return whereAmI();
     case "back": return goBack(a.label);
     case "replay": return replay(a.name);
@@ -394,7 +566,7 @@ async function act(r) {
     case "repeat": return say(S.lastSpoken);
     case "pause": S.paused = true; return;
     case "resume": S.paused = false; return;
-    case "stop": S.find = null; S.route = null; S.back = null; render(); return;
+    case "stop": S.find = null; S.route = null; S.back = null; S.mission = null; render(); return;
   }
 }
 async function describe(question = "What's around me?", interrupt = true) {
@@ -432,7 +604,7 @@ function render() {
   $("gps").className = "v " + (S.sim || S.gpsOk ? "ok" : "warn");
   $("heading").textContent = S.heading == null ? "walk a few steps" : `${Math.round(S.heading)}°`;
   const st = S.route?.steps[S.stepIdx];
-  $("next").textContent = S.back ? `going back (${S.back.i + 1}/${S.back.steps.length})` :
+  $("next").textContent = S.mission ? `${S.mission.room}: ${S.mission.phase}` : S.back ? `going back (${S.back.i + 1}/${S.back.steps.length})` :
     st && S.pos ? `${st.turn} in ${Math.round(dist(S.pos, st))} m` : "no route";
 }
 async function checkServer() {
@@ -452,7 +624,7 @@ async function start() {
     S.sim = true; onFix({ lat: +qs.get("lat"), lon: +qs.get("lon") }, 5, false);
     say("Simulated start position set. Use W to walk, A and F to turn.", { interrupt: false });
   }
-  try { await startMic(); stopMic(); } catch (e) { log("mic:", e.message); }   // ask permission once, then release
+  try { await startListening(); } catch (e) { log("mic:", e.message); $("listen").textContent = "mic off"; }
   audioLoop();
 }
 $("start").onclick = start;
@@ -462,10 +634,13 @@ document.addEventListener("keydown", (e) => {
   if (!started || e.repeat || e.target.tagName === "INPUT") return;
   const k = e.key.toLowerCase();
   if (e.code === "Space") { e.preventDefault(); chunks = []; $("say").textContent = "Listening…";
-                            startMic().then(() => { talking = true; tap("both"); }).catch((x) => log("mic:", x.message)); }
+                            (micStream ? Promise.resolve() : startListening()).then(() => { talking = true; tap("both"); }).catch((x) => log("mic:", x.message)); }
   else if (k === "d") describe();
   else if (k === "l") { const t = prompt("What should Pip find? (e.g. door knob)"); if (t) findStart(t); }
-  else if (e.key === "Escape") findStop("Stopped looking.");
+  else if (e.key === "Escape") { if (S.mission) { S.mission = null; say("Stopped."); render(); } else findStop("Stopped looking."); }
+  else if (k === "n" && S.mission?.phase === "through") missionReplan("went through the door");
+  else if (k === "h") { alwaysOn = !alwaysOn; say(alwaysOn ? "I'm listening for Hey Pip." : "Okay, only when you hold space.");
+                        $("listen").textContent = alwaysOn ? "listening for “Hey Pip”" : "push-to-talk only"; }
   else if (k === "b") goBack();
   else if (k === "s") saveSpot(`spot ${S.spots.length + 1}`);
   else if (k === "r") say(S.lastSpoken);
@@ -486,6 +661,6 @@ document.addEventListener("keydown", (e) => {
 });
 document.addEventListener("keyup", (e) => {
   if (e.code !== "Space") return;
-  const was = talking; talking = false; stopMic();
+  const was = talking; talking = false;
   if (was) { tap("both"); $("say").textContent = "Thinking…"; sendTalk(); }
 });
