@@ -90,19 +90,28 @@ function say(text, { interrupt = true } = {}) {
   voiceChain = voiceChain.then(() => speakNow(text)).catch(() => {});
 }
 async function speakNow(text) {
-  try {
-    const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 2500);
-    const buf = await (await fetch(`${SERVER}/tts?text=${encodeURIComponent(text)}`, { signal: ctl.signal })).arrayBuffer();
-    clearTimeout(t);
-    const audio = await ac.decodeAudioData(buf);
+  if (ac.state !== "running") await ac.resume();   // Chrome pauses idle audio
+  // Sentence by sentence: the first one plays fast; long replies don't time out.
+  const parts = text.match(/[^.!?]+[.!?]*/g)?.map((x) => x.trim()).filter(Boolean) || [text];
+  const fetchOne = (t) => fetch(`${SERVER}/tts?text=${encodeURIComponent(t)}`, { signal: AbortSignal.timeout(6000) })
+    .then((r) => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); }).then((b) => ac.decodeAudioData(b));
+  let next = fetchOne(parts[0]);
+  for (let i = 0; i < parts.length; i++) {
+    let audio;
+    try { audio = await next; } catch { return fallbackVoice(parts.slice(i).join(" ")); }
+    if (i + 1 < parts.length) next = fetchOne(parts[i + 1]);   // fetch the next sentence while this one plays
     await new Promise((res) => {
       const src = ac.createBufferSource(); src.buffer = audio; src.connect(ac.destination);
       src.onended = res; voiceSrc = src; src.start();
-      speakingUntil = performance.now() + audio.duration * 1000 + 250;
+      speakingUntil = performance.now() + audio.duration * 1000 + 300;
     });
-  } catch {
-    await new Promise((res) => { const u = new SpeechSynthesisUtterance(text); u.rate = 1.1; u.onend = res; u.onerror = res; speechSynthesis.speak(u); });
   }
+}
+function fallbackVoice(text) {   // browser voice; Chrome drops speak() right after cancel(), so wait a beat
+  return new Promise((res) => setTimeout(() => {
+    const u = new SpeechSynthesisUtterance(text); u.rate = 1.1; u.onend = res; u.onerror = res;
+    speechSynthesis.speak(u); setTimeout(res, 15000);
+  }, 150));
 }
 
 // ---------- 2. GPS (Chrome uses Google's location service) + memory ----------
@@ -539,7 +548,8 @@ async function askPip({ body, text, wake = false }) {
               (wake ? `&wake=1&followup=${Date.now() < followUntil ? 1 : 0}` : "");
   try {
     const r = await (await fetch(url, { method: "POST", body: body || "" })).json();
-    if (r.ignored) { log("(not for Pip)", r.heard); return; }
+    if (r.ignored) { log("(not for Pip)", r.heard); if (r.heard) $("listen").textContent = `heard “${r.heard.slice(0, 40)}” (say “Hey Pip” first)`; return; }
+    $("listen").textContent = `heard “${(r.heard || "").slice(0, 40)}”`;
     if (r.awake) tap("both", "got");
     followUntil = Date.now() + 8000;   // a quick "yes" after Pip speaks doesn't need "Hey Pip"
     log("HEARD", r.heard, "->", (r.tools || []).map((t) => t.tool).join(",") || "-", r.action?.type || "", `${r.ms}ms (stt ${r.ms_stt}ms)`);
@@ -616,7 +626,7 @@ async function start() {
   if (started) return; started = true;
   ac = new AudioContext();
   $("start").remove();
-  say("Hi, I'm Pip. Hold space to talk to me. Press T to test the taps. Camera and GPS are off until you need them.");
+  say("Hi, I'm Pip. Hold space to talk to me. Press T to test the taps.");
   checkServer(); setInterval(checkServer, 15000);
   fetch(SERVER + "/warmup", { method: "POST" }).then(() => checkServer()).catch(() => {});
   startSegment();   // GPS and camera stay off until the conversation needs them
