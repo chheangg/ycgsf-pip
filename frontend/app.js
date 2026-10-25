@@ -81,15 +81,25 @@ function audioLoop() {
   requestAnimationFrame(audioLoop);
 }
 // Pip's voice: Kokoro-82M on the 4090 (natural), browser voice if the server is slow or down.
-let voiceSrc = null, voiceChain = Promise.resolve(), speakingUntil = 0;
-const speaking = () => performance.now() < speakingUntil || speechSynthesis.speaking;
-function say(text, { interrupt = true } = {}) {
+// One voice at a time. While Pip is talking, only the NEWEST waiting line is kept (stale ones are dropped);
+// only urgent lines (obstacle, stop) cut in.
+let voiceSrc = null, voiceChain = Promise.resolve(), speakingUntil = 0, voiceBusy = false, pendingLine = null, voiceGen = 0;
+const speaking = () => voiceBusy || performance.now() < speakingUntil || speechSynthesis.speaking;
+function say(text, { urgent = false } = {}) {
   if (!text) return;
   S.lastSpoken = text; $("say").textContent = text; log("SAY", text);
-  if (interrupt) { try { voiceSrc?.stop(); } catch {} speechSynthesis.cancel(); voiceChain = Promise.resolve(); }
-  voiceChain = voiceChain.then(() => speakNow(text)).catch(() => {});
+  if (urgent) { voiceGen++; try { voiceSrc?.stop(); } catch {} speechSynthesis.cancel(); pendingLine = null; voiceBusy = false; }
+  if (voiceBusy) { pendingLine = text; return; }
+  playLine(text);
 }
-async function speakNow(text) {
+async function playLine(text) {
+  voiceBusy = true; const gen = voiceGen;
+  try { await speakNow(text, gen); } catch {}
+  if (gen !== voiceGen) return;            // an urgent line took over
+  voiceBusy = false;
+  if (pendingLine) { const next = pendingLine; pendingLine = null; playLine(next); }
+}
+async function speakNow(text, gen = voiceGen) {
   if (ac.state !== "running") await ac.resume();   // Chrome pauses idle audio
   // Sentence by sentence: the first one plays fast; long replies don't time out.
   const parts = text.match(/[^.!?]+[.!?]*/g)?.map((x) => x.trim()).filter(Boolean) || [text];
@@ -99,6 +109,7 @@ async function speakNow(text) {
   for (let i = 0; i < parts.length; i++) {
     let audio;
     try { audio = await next; } catch { return fallbackVoice(parts.slice(i).join(" ")); }
+    if (gen !== voiceGen) return;
     if (i + 1 < parts.length) next = fetchOne(parts[i + 1]);   // fetch the next sentence while this one plays
     await new Promise((res) => {
       const src = ac.createBufferSource(); src.buffer = audio; src.connect(ac.destination);
@@ -227,7 +238,7 @@ function backCue() {
   const el = (Date.now() - b.started) / 1000;
   if (st.action === "turn_around" || st.action === "left" || st.action === "right") {
     if (el > 4) { b.i++; b.started = Date.now(); const n = b.steps[b.i];
-      if (n?.action === "walk") say(`Walk straight about ${n.seconds} seconds${n.landmark ? `, past a ${n.landmark}` : ""}.`, { interrupt: false }); }
+      if (n?.action === "walk") say(`Walk straight about ${n.seconds} seconds${n.landmark ? `, past a ${n.landmark}` : ""}.`); }
     if (el < 0.1 && st.action !== "turn_around") say(`Turn ${st.action}.`);
     return { side: st.action === "turn_around" ? "both" : st.action, interval: 0.3, kind: "tap" };
   }
@@ -246,7 +257,7 @@ function learnStart(name, start) {
   ensureCamera();
   endSegment(null);
   S.learning = { name, start: start || "here", trailIdx: S.trail.length };
-  say(`Recording the way to ${name}. Walk there, and use the arrow keys when you turn. Say "we're here" when you arrive.`, { interrupt: false });
+  say(`Recording the way to ${name}. Walk there, and use the arrow keys when you turn. Say "we're here" when you arrive.`);
 }
 function learnEnd() {
   if (!S.learning) return say("I wasn't recording a route.");
@@ -254,7 +265,7 @@ function learnEnd() {
   const segs = S.trail.slice(S.learning.trailIdx);
   const all = routesStore(); all[S.learning.name] = { start: S.learning.start, segments: segs, t: Date.now() };
   localStorage.setItem("pip.routes", JSON.stringify(all));
-  say(`Saved the way to ${S.learning.name}, from ${S.learning.start}. Next time just ask me to take you there.`, { interrupt: false });
+  say(`Saved the way to ${S.learning.name}, from ${S.learning.start}. Next time just ask me to take you there.`);
   S.learning = null;
 }
 function replay(name) {
@@ -269,7 +280,7 @@ function replay(name) {
   steps.push({ action: "arrive" });
   S.back = { steps, i: 0, started: Date.now(), arriveMsg: `You should be at ${key}.` }; S.route = null;
   const first = steps[0];
-  say(`Starting from ${all[key].start}. Walk straight about ${first.seconds} seconds.`, { interrupt: false });
+  say(`Starting from ${all[key].start}. Walk straight about ${first.seconds} seconds.`);
 }
 
 // ---------- GO TO A ROOM: door -> line up -> walk -> through -> verify (done only on proof) ----------
@@ -319,18 +330,19 @@ async function missionReplan(why) {
     m.history.push(`${why}: saw ${r?.scene?.summary || "?"}; next ${p.target || p.search}`);
     if (p.reached) { m.phase = "verify"; m.phaseAt = Date.now(); say(p.say || `Checking if this is the ${m.room}.`); return; }
     if (p.action === "open_door" || (p.action === "walk" && /door|doorway/.test(why))) {   // go through, then look again
-      say(p.say, { interrupt: false }); m.phase = "through"; m.phaseAt = Date.now(); render(); return;
+      say(p.say); m.phase = "through"; m.phaseAt = Date.now(); render(); return;
     }
     m.via = (p.search || "door").toLowerCase(); m.target = p.target || m.via;
     m.door = null; m.doorAt = 0; m.dxs = null; m.centered = false; m.lastDir = null; m.gotTapped = false; m.doorChecks = 0;
-    say(p.say || `Let's find a ${m.via}.`, { interrupt: false });
+    say(p.say || `Let's find a ${m.via}.`);
     mPhase("scan");
   } catch (e) { log("replan failed", e); m.via = "door"; mPhase("scan", "Turn slowly, I'm looking for a door."); }
   finally { if (S.mission) S.mission.planning = false; }
 }
 function mSay(text, every = 4000) {
   const m = S.mission;
-  if (text !== m.lastSay || Date.now() - m.saidAt > every) { say(text, { interrupt: true }); m.lastSay = text; m.saidAt = Date.now(); }
+  if (speaking() && every > 0) return;      // never pile up guidance chatter
+  if (text !== m.lastSay || Date.now() - m.saidAt > every) { say(text); m.lastSay = text; m.saidAt = Date.now(); }
 }
 function mPhase(phase, text) { const m = S.mission; m.phase = phase; m.phaseAt = Date.now(); if (text) mSay(text, 0); log("mission:", phase); render(); }
 function missionCue() {
@@ -385,7 +397,16 @@ async function missionStep(blob) {
       if (dir !== "center") { m.gotTapped = false; if (dir !== m.lastDir) { m.lastDir = dir; mSay(`${dir} ${dir}`, 0); } else mSay(`${dir} ${dir}`, 5000); return; }
       m.lastDir = "center";
       if (!m.centerSince) m.centerSince = t;
-      if (t - m.centerSince > 800) { m.centerSince = 0; return mPhase("approach", `It's straight ahead. Walk forward slowly.`); }   // hold it a moment
+      if (t - m.centerSince > 800 && !m.confirming) {   // held it a moment: second opinion before walking toward it
+        m.centerSince = 0; m.confirming = true;
+        const fd = new FormData(); fd.append("image", lastFrame, "f.jpg"); fd.append("what", m.via);
+        fetch(SERVER + "/confirm", { method: "POST", body: fd }).then((x) => x.json()).then((c) => {
+          if (!S.mission) return; m.confirming = false;
+          if (c.is_it === false) { log("not a", m.via, "->", c.actually); m.door = null; m.doorAt = 0; m.dxs = null; m.centered = false;
+                                   return mPhase("scan", `That's a ${c.actually || "something else"}, not a ${m.via}. Keep turning slowly.`); }
+          mPhase("approach", `It's straight ahead. Walk forward slowly.`);
+        }).catch(() => { m.confirming = false; mPhase("approach", `It's straight ahead. Walk forward slowly.`); });
+      }
       return;
     }
     case "approach":
@@ -502,7 +523,7 @@ async function localLoop() {
         S.clear = r.clear; S.hint = guiding() ? r.hint : "clear"; S.hazards = r.hazards;
         if (S.seg) S.seg.landmarks.push(...r.landmarks);
         const near = r.hazards.find((h) => h.near && h.side === "ahead");
-        if (near && guiding() && Date.now() - hazardSaidAt > 6000) { hazardSaidAt = Date.now(); say(`${near.label} ahead.`, { interrupt: false }); }
+        if (near && guiding() && Date.now() - hazardSaidAt > 6000) { hazardSaidAt = Date.now(); say(`Careful, ${near.label} ahead.`, { urgent: true }); }
         $("clear").textContent = `${r.hint.replace("_", " ")} · ${r.ms} ms`;
         $("clear").className = "v " + (r.hint === "clear" ? "ok" : r.hint === "stop" ? "bad" : "warn");
       } catch (e) { $("clear").textContent = "no model"; S.hint = "clear"; }
@@ -607,7 +628,7 @@ async function act(r) {
     case "mission": return missionStart(a.room, a.via, a.proof);
     case "describe": return describe("What's around me?", false);
     case "gps_on": ensureGPS(); return;
-    case "look": { const r = await lookAndPlan(a.goal || "where I want to go"); if (r) say(r.plan.say, { interrupt: false }); return; }
+    case "look": { const r = await lookAndPlan(a.goal || "where I want to go"); if (r) say(r.plan.say); return; }
     case "where": return whereAmI();
     case "back": return goBack(a.label);
     case "replay": return replay(a.name);
@@ -624,7 +645,7 @@ async function describe(question = "What's around me?", interrupt = true) {
   const blob = lastFrame || (await frameBlob());
   if (!blob) return say("The camera isn't on.");
   const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("question", question);
-  try { say((await (await fetch(SERVER + "/describe", { method: "POST", body: fd })).json()).say, { interrupt }); }
+  try { say((await (await fetch(SERVER + "/describe", { method: "POST", body: fd })).json()).say); }
   catch { say("I can't reach the vision model right now."); }
 }
 async function whereAmI() {
@@ -672,7 +693,7 @@ async function start() {
   startSegment();   // GPS and camera stay off until the conversation needs them
   if (qs.get("lat") && qs.get("lon")) {   // desk demo: start here and walk with W/A/F
     S.sim = true; onFix({ lat: +qs.get("lat"), lon: +qs.get("lon") }, 5, false);
-    say("Simulated start position set. Use W to walk, A and F to turn.", { interrupt: false });
+    say("Simulated start position set. Use W to walk, A and F to turn.");
   }
   try { await startListening(); } catch (e) { log("mic:", e.message); $("listen").textContent = "mic off"; }
   audioLoop();
