@@ -329,7 +329,12 @@ async function lookAround(why) {
     if (!S.mission) return;
     const p = r.plan || {};
     log("deduce:", p.why || "", "->", JSON.stringify(p), `${r.ms}ms`);
-    m.history.push(`${why}: looked around (${(r.views || []).map((v) => v.facing || "?").join(", ")}); chose ${p.target || p.search} because ${p.why || "?"}`);
+    const place = p.place || "unknown";
+    if (place !== "unknown" && m.place && place !== m.place) {
+      say(place === "hallway" ? `We're out of the ${m.place}, you're in a hallway now.` : `You've left the ${m.place}. This looks like a ${place}.`);
+    }
+    m.history.push(`${why}: now in ${place}${m.place ? ` (was ${m.place})` : ""}; looked around (${(r.views || []).map((v) => v.facing || "?").join(", ")}); chose ${p.target || p.search} because ${p.why || "?"}`);
+    if (place !== "unknown") m.place = place;
     if (p.reached) { m.phase = "verify"; m.phaseAt = Date.now(); say(p.say || `I think this is the ${m.room}. Let me check.`); return; }
     if (p.backtrack) { m.planning = false; return backtrack(m, p.why || "nothing here leads on"); }
     if ((m.tried || []).some((x) => x && p.target && x.toLowerCase() === String(p.target).toLowerCase()) && /came back/.test(why)) {
@@ -399,9 +404,10 @@ async function doorStep(m) {
       say(`It's a sliding door. ${/left/.test(d.opens) ? "Slide it to the left." : /right/.test(d.opens) ? "Slide it to the right." : "Find the edge and slide it open."}`);
       m.phase = "door"; m.phaseAt = Date.now(); render(); return;
     }
-    if (d.type !== "sliding" && m.phase !== "door" && m.phase !== "handle") {   // hinged and closed: guide the hand to the handle
+    if (d.type !== "sliding" && m.phase !== "door" && m.phase !== "handle") {   // hinged (or unsure: most doors are) -> find the handle
       m.handleInfo = d; m.phase = "handle"; m.phaseAt = Date.now(); m.dxs = null; m.centered = false; m.lastDir = null; render();
-      say(`The door's closed. Let's find the handle${d.handle === "left" || d.handle === "right" ? `, it's on the ${d.handle}` : ""}. Point the camera at it.`);
+      say(`The door's closed. Let's find the handle${d.handle === "left" || d.handle === "right" ? `, it's on the ${d.handle}` : ""}. Point the camera at it.` +
+          (d.type === "unsure" ? " If it slides instead, tell me." : ""));
       return;
     }
     const first = m.phase !== "door";
@@ -488,7 +494,11 @@ async function missionStep(blob) {
   const r = await (await fetch(SERVER + "/scan", { method: "POST", body: fd })).json();
   if (!S.mission) return;
   const t = Date.now(), door = r.hits[m.via];
-  const proof = m.proof.map((p) => r.hits[p] && { name: p, ...r.hits[p] }).filter((h) => h && h.score >= (m.proof.includes(m.room) ? 0.15 : 0.2)).sort((a, b) => b.score - a.score)[0];
+  let proof = m.proof.map((p) => r.hits[p] && { name: p, ...r.hits[p] }).filter((h) => h && h.score >= (m.proof.includes(m.room) ? 0.2 : 0.3)).sort((a, b) => b.score - a.score)[0];
+  // Proof must hold for 3 frames in a row before it counts (one-frame false positives are common).
+  m.proofStreak = proof && m.lastProofName === proof.name ? (m.proofStreak || 0) + 1 : proof ? 1 : 0;
+  m.lastProofName = proof?.name;
+  if (m.proofStreak < 3) proof = null;
   if (door && door.score >= 0.15) { m.door = door; m.doorAt = t; }
   $("clear").textContent = `${m.phase} · door ${door ? Math.round(door.score * 100) + "%" : "-"} · ${proof ? proof.name : "no proof"} · ${r.ms} ms`;
   $("clear").className = "v " + (proof ? "ok" : "warn");
