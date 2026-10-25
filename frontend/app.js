@@ -297,8 +297,52 @@ function missionStart(room, via, proof) {
   S.find = null; S.route = null; S.back = null;
   S.mission = { room, via: via || "door", proof: proof || ["toilet", "sink"], phase: "plan", phaseAt: Date.now(),
                 door: null, doorAt: 0, proofHit: null, proofAt: 0, saidAt: 0, lastSay: "", tries: 0, history: [], planning: false };
-  missionReplan("start");
+  lookAround("start");
 }
+// Deduction step: the user turns slowly in place while Pip grabs ~8 views; the vision model describes each
+// and the brain picks the most promising direction (doorway, hallway, a door with a sign...).
+async function lookAround(why) {
+  const m = S.mission; if (!m || m.planning) return;
+  m.planning = true; m.phase = "sweep"; m.phaseAt = Date.now(); render();
+  await ensureCamera();
+  say(m.history.length ? "Let me look around here. Turn slowly to your right, all the way around." :
+                         "I'll take a look around first. Turn slowly to your right, all the way around.");
+  await new Promise((r) => setTimeout(r, 1800));             // let the instruction land
+  const views = [];
+  for (let i = 0; i < 8 && S.mission; i++) {                   // ~11 s slow spin
+    const b = await frameBlob(); if (b) views.push(b);
+    await new Promise((r) => setTimeout(r, 1400));
+  }
+  if (!S.mission) return;
+  say("Okay, stop there. Let me think.", { urgent: true });
+  try {
+    const fd = new FormData(); views.forEach((b, i) => fd.append("images", b, `v${i}.jpg`));
+    fd.append("goal", m.room); fd.append("history", JSON.stringify(m.history.slice(-8)));
+    const r = await (await fetch(SERVER + "/panorama", { method: "POST", body: fd })).json();
+    if (!S.mission) return;
+    const p = r.plan || {};
+    log("deduce:", p.why || "", "->", JSON.stringify(p), `${r.ms}ms`);
+    m.history.push(`${why}: looked around (${(r.views || []).map((v) => v.facing || "?").join(", ")}); chose ${p.target || p.search} because ${p.why || "?"}`);
+    if (p.reached) { m.phase = "verify"; m.phaseAt = Date.now(); say(p.say || `I think this is the ${m.room}. Let me check.`); return; }
+    m.via = (p.search || "door").toLowerCase(); m.target = p.target || m.via;
+    m.door = null; m.doorAt = 0; m.dxs = null; m.centered = false; m.lastDir = null; m.gotTapped = false; m.doorChecks = 0;
+    say(p.say || `Let's head for the ${m.target}.`);
+    m.phase = "scan"; m.phaseAt = Date.now(); render();
+  } catch (e) { log("look around failed", e); m.via = "door"; m.phase = "scan"; m.phaseAt = Date.now(); say("Turn slowly, I'm looking for a door."); }
+  finally { if (S.mission) S.mission.planning = false; }
+}
+// Facing a blank wall with nothing to aim at: tell the user, like a friend would.
+async function wallCheck(m) {
+  m.wallCheckAt = Date.now();
+  try {
+    const fd = new FormData(); fd.append("image", lastFrame, "f.jpg");
+    const r = await (await fetch(SERVER + "/local", { method: "POST", body: fd })).json();
+    if (!S.mission || S.mission.phase !== "scan") return;
+    if (r.clear.ahead < 0.25 && !r.hazards.length) mSay("There's a wall in front of you. Turn slowly to your right.", 8000);
+    else mSay(`Keep turning slowly. I'm looking for the ${m.target || m.via}.`, 8000);
+  } catch {}
+}
+
 // At a door: the vision model says open/closed, where the handle is, push or pull. Coach until it's open.
 async function doorStep(m) {
   if (m.doorBusy) return;
@@ -310,7 +354,7 @@ async function doorStep(m) {
     if (!S.mission) return;
     log("door:", JSON.stringify(d));
     if (d.door === "open") { say(d.say || "It's open. Walk through slowly, about two steps."); m.phase = "through"; m.phaseAt = Date.now(); render(); return; }
-    if (d.door === "none") { return missionReplan("thought I was at a door but don't see one up close"); }
+    if (d.door === "none") { return lookAround("thought I was at a door but don't see one up close"); }
     const first = m.phase !== "door";
     m.phase = "door"; m.phaseAt = Date.now(); m.doorChecks = (m.doorChecks || 0) + 1; render();
     if (first) say(d.say || "The door's closed. Find the handle and open it.");
@@ -361,7 +405,7 @@ function missionCue() {
 }
 async function missionStep(blob) {
   const m = S.mission;
-  if (m.planning || m.phase === "plan") return;
+  if (m.planning || m.phase === "plan" || m.phase === "sweep") return;
   const labels = [m.via, ...m.proof].join(",");
   const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("labels", labels);
   const r = await (await fetch(SERVER + "/scan", { method: "POST", body: fd })).json();
@@ -387,9 +431,10 @@ async function missionStep(blob) {
   const since = t - m.phaseAt, seeDoor = t - m.doorAt < 1500;
   switch (m.phase) {
     case "scan":
-      if (seeDoor) return mPhase("orient", `I see the ${m.target || m.via}.`);
-      if (since > 20000) { m.tries++; return missionReplan(`couldn't find ${m.via} after turning`); }
-      return mSay(`Turn slowly, I'm looking for the ${m.target || m.via}.`, 6000);
+      if (seeDoor) return mPhase("orient", `There, I see the ${m.target || m.via}.`);
+      if (since > 18000) { m.tries++; return lookAround(`couldn't find the ${m.via} after turning`); }
+      if (since > 3000 && t - (m.wallCheckAt || 0) > 4000) wallCheck(m);   // facing a wall? say so and turn
+      return;
     case "orient": {
       if (!seeDoor && since > 2500) { m.dxs = null; m.centered = false; return mPhase("scan", `Lost it. Turn slowly.`); }
       if (!seeDoor) return;
@@ -410,10 +455,10 @@ async function missionStep(blob) {
       return;
     }
     case "approach":
-      if (!seeDoor && since > 4000) return missionReplan(`lost sight of the ${m.via} while walking`);
+      if (!seeDoor && since > 4000) return lookAround(`lost sight of the ${m.via} while walking`);
       if (seeDoor && m.door.size > 0.3) {
         if (/door/.test(m.via)) return doorStep(m);                            // a door has to be opened first
-        return missionReplan(`standing right at the ${m.target || m.via}`);   // other landmarks: look and re-plan
+        return lookAround(`reached the ${m.target || m.via}`);                // other landmarks: look around, deduce
       }
       if (seeDoor) { const dir = track(m, m.door); if (dir !== "center" && Math.abs(m.dxs) > 0.28) mSay(`a bit ${dir}`, 5000); }
       return;
@@ -421,13 +466,13 @@ async function missionStep(blob) {
       if (since > 3500 && !m.doorBusy) return doorStep(m);
       return;
     case "through":
-      if (since > 7000) return missionReplan("walked through the open door");
+      if (since > 7000) return lookAround("walked through a door");
       return;
     case "verify":
       if (since > 14000) {
         m.tries++;
         if (m.tries >= 3) { say(`I couldn't find the ${m.room}. Want to teach me the way once, so I know it next time?`); S.mission = null; return render(); }
-        return missionReplan(`this room is not the ${m.room}; need another way`);
+        return lookAround(`this place is not the ${m.room}; need another way`);
       }
       return;
   }
@@ -709,7 +754,7 @@ document.addEventListener("keydown", (e) => {
   else if (k === "d") describe();
   else if (k === "l") { const t = prompt("What should Pip find? (e.g. door knob)"); if (t) findStart(t); }
   else if (e.key === "Escape") { if (S.mission) { S.mission = null; say("Stopped."); render(); } else findStop("Stopped looking."); }
-  else if (k === "n" && (S.mission?.phase === "through" || S.mission?.phase === "door")) missionReplan("walked through the open door");
+  else if (k === "n" && (S.mission?.phase === "through" || S.mission?.phase === "door")) lookAround("walked through a door");
   else if (k === "h") {
     listenMode = { always: "wake", wake: "push", push: "always" }[listenMode]; alwaysOn = listenMode !== "push";
     localStorage.setItem("pip.listen", listenMode); showListen();
