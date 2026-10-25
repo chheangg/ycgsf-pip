@@ -6,12 +6,12 @@
 - Unclassified: 14 file(s) not represented in the graph (top: .glsl 5, (none) 3, .pen 1)
 
 ## Summary
-- 723 nodes · 1804 edges · 35 communities (25 shown, 10 thin omitted)
+- 729 nodes · 1804 edges · 37 communities (25 shown, 12 thin omitted)
 - Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 56 edges (avg confidence: 0.85)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `1d94d1b3`
+- Built from commit: `8e0ecb07`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -24,26 +24,23 @@
 - ARSense
 - ui.js
 - app.py
-- Sensors.swift
+- log
 - Camera
 - Voice
 - post
 - SlamMap
 - json
 - Sensors
-- render
 - slamMap
+- render
 - _json
 - missionStep
 - Trip
 - trip_report.py
-- rad
-- Mic
+- gpsWalk
 - panorama
-- start
 - plan
 - icons.js
-- .snapshot
 - dist
 - shaders.js
 - run.sh
@@ -57,21 +54,21 @@
 3. `ARSense` - 33 edges
 4. `render()` - 30 edges
 5. `act()` - 27 edges
-6. `Sensors` - 26 edges
-7. `slamMap()` - 25 edges
-8. `Voice` - 25 edges
-9. `index.html (Pip screen markup and styles)` - 24 edges
-10. `roomDist()` - 23 edges
+6. `slamMap()` - 25 edges
+7. `Voice` - 25 edges
+8. `index.html (Pip screen markup and styles)` - 24 edges
+9. `roomDist()` - 23 edges
+10. `Sensors` - 23 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `PipWebView` --references--> `index.html (Pip screen markup and styles)`  [INFERRED]
   ios/Pip/PipWebView.swift → frontend/index.html
 - `Model server Python requirements` --references--> `Kokoro-82M voice (af_heart, kokoro-onnx, /tts)`  [AMBIGUOUS]
   server/requirements.txt → README.md
-- `Info.plist privacy usage descriptions (camera, mic, motion, location, local network)` --references--> `ARSense`  [INFERRED]
-  ios/project.yml → ios/Pip/ARSense.swift
-- `Info.plist privacy usage descriptions (camera, mic, motion, location, local network)` --references--> `Camera`  [INFERRED]
-  ios/project.yml → ios/Pip/Camera.swift
+- `Info.plist privacy usage descriptions (camera, mic, motion, location, local network)` --references--> `Sensors`  [INFERRED]
+  ios/project.yml → ios/Pip/Sensors.swift
+- `Pip iOS app target (com.ycgsf.pip, iOS 17)` --references--> `PipApp`  [INFERRED]
+  ios/project.yml → ios/Pip/PipApp.swift
 - `Info.plist privacy usage descriptions (camera, mic, motion, location, local network)` --references--> `Mic`  [INFERRED]
   ios/project.yml → ios/Pip/Mic.swift
 
@@ -84,31 +81,31 @@
 - **Design contract implemented in index.html (tokens, shared components, button states, accessibility)** — claude_pen_dev_design_contract, frontend_index_css_tokens, frontend_index_voice_bar, frontend_index_key_states, frontend_index_reduce_motion, frontend_index_larger_text [INFERRED 0.85]
 - **iOS app bundles and shows the web frontend** — ios_project_pip_target, ios_pip_pipwebview_pipwebview, frontend_index, frontend_ui, frontend_app [INFERRED 0.85]
 
-## Communities (35 total, 10 thin omitted)
+## Communities (37 total, 12 thin omitted)
 
 ### Community 0 - "walkCue"
-Cohesion: 0.18
-Nodes (25): angleDiff(), blockedStep(), buildPath(), compassNow(), currentDirection(), distWords(), gpsCue(), gpsLeg() (+17 more)
+Cohesion: 0.09
+Nodes (50): angleDiff(), audioLoop(), backCue(), bearing(), blockedStep(), buildPath(), circMean(), compassNow() (+42 more)
 
 ### Community 1 - "index.html (Pip screen markup and styles)"
 Cohesion: 0.05
 Nodes (37): CLAUDE.md (Pip project instructions), Button States frame (ready, pressed, working, done, unavailable), tools/check_code.py code check (must print "clean"), tools/check_design.py design check (must print "matches"), Pip design screens (01 Start through 09 Route preview), Design tokens (design/tokens.json, CSS variables --bg, --fg, --accent), Pip model server (server/ on the RTX 4090, reached over Tailscale), Motion + Gestures frame (+29 more)
 
 ### Community 2 - "app.js"
-Cohesion: 0.05
-Nodes (49): askPip(), backCue(), bestPlace(), chunks, cleanQuery(), cue(), EXIT_WORDS, findCue() (+41 more)
+Cohesion: 0.06
+Nodes (48): askPip(), askPipNow(), bestPlace(), checkServer(), chunks, EXIT_WORDS, fallbackVoice(), HAND_WORDS (+40 more)
 
 ### Community 3 - "How it works"
 Cohesion: 0.08
 Nodes (34): Apple Maps walking directions, Apple Vision text recognition (signs, exit signs), Published studies with blind users (turn words, tap rates, progress tones), Brain: Qwen3-14B tool-calling agent, Browser (desk testing), Clew (occamLab route-following app), Depth-Anything-V2-Small (camera-only distance), Harnesses (find object, obstacle stop, door coaching, room check, door vs look-alike) (+26 more)
 
 ### Community 4 - "say"
-Cohesion: 0.18
-Nodes (35): act(), answerLocally(), askPipNow(), describe(), ensureCamera(), ensureGPS(), findStart(), goBack() (+27 more)
+Cohesion: 0.13
+Nodes (27): answerLocally(), aroundCheck(), arReady(), doneChime(), doorThrough(), findCue(), findKey(), findStart() (+19 more)
 
 ### Community 5 - "ARSense"
-Cohesion: 0.10
-Nodes (10): ARSense, .depth, .frameId, .jpeg, .mapping, .mapsDir, .supported, .tracking (+2 more)
+Cohesion: 0.08
+Nodes (12): ARSense, .depth, .frameId, .jpeg, .mapping, .mapsDir, .pose, .supported (+4 more)
 
 ### Community 6 - "ui.js"
 Cohesion: 0.13
@@ -118,9 +115,9 @@ Nodes (24): frame(), avail(), countTurns(), drawLog(), drawPlaces(), fillRing(),
 Cohesion: 0.10
 Nodes (14): backtrack(), BacktrackRequest, _bearing(), decide_slam(), _drop_lookalikes(), _iou(), _meters(), PlanRequest (+6 more)
 
-### Community 8 - "Sensors.swift"
-Cohesion: 0.13
-Nodes (9): ARKit, AVFoundation, CoreImage, CoreLocation, CoreMotion, Foundation, simd, UIKit (+1 more)
+### Community 8 - "log"
+Cohesion: 0.24
+Nodes (13): b64ToBlob(), describe(), ensureCamera(), frameBlob(), guiding(), hopCheck(), learnCancel(), localLoop() (+5 more)
 
 ### Community 9 - "Camera"
 Cohesion: 0.13
@@ -131,28 +128,32 @@ Cohesion: 0.15
 Nodes (11): _crop(), device(), get(), health(), local(), locate(), replan(), scan() (+3 more)
 
 ### Community 12 - "SlamMap"
-Cohesion: 0.14
-Nodes (8): Cell, free, occupied, unknown, Door, Frontier, SlamMap, .knownCells
+Cohesion: 0.09
+Nodes (13): ARKit, CoreImage, Cell, free, occupied, unknown, Door, Frontier (+5 more)
 
 ### Community 13 - "json"
 Cohesion: 0.17
 Nodes (5): agent(), names_a_location(), run_tool(), uses(), build()
 
-### Community 15 - "render"
-Cohesion: 0.18
-Nodes (22): aroundCheck(), arReady(), askNative(), atSign(), backtrack(), giveUp(), goToSign(), pinLandmark() (+14 more)
+### Community 14 - "Sensors"
+Cohesion: 0.07
+Nodes (7): AVFoundation, CoreLocation, CoreMotion, Foundation, Mic, Sensors, .jpeg
 
-### Community 16 - "slamMap"
-Cohesion: 0.26
-Nodes (16): aRoom(), b64ToBlob(), doneChime(), doorBlocked(), frameBlob(), hopCheck(), hopDone(), leaveCheck() (+8 more)
+### Community 15 - "slamMap"
+Cohesion: 0.24
+Nodes (18): atSign(), doorStep(), goToSign(), leaveSample(), noteSigns(), obstacleCheck(), readDoor(), readSigns() (+10 more)
+
+### Community 16 - "render"
+Cohesion: 0.22
+Nodes (18): act(), aRoom(), backtrack(), doorBlocked(), giveUp(), goBack(), hopDone(), leaveCheck() (+10 more)
 
 ### Community 17 - "_json"
 Cohesion: 0.21
 Nodes (8): check_room(), confirm(), describe(), door(), door_words(), _json(), describe_view(), see()
 
 ### Community 18 - "missionStep"
-Cohesion: 0.19
-Nodes (19): doorHow(), doorStep(), doorThrough(), doorWait(), doorWaitStart(), endLeg(), HANDLE_LABELS, handleStep() (+11 more)
+Cohesion: 0.23
+Nodes (14): doorHow(), doorWait(), doorWaitStart(), endLeg(), HANDLE_LABELS, handleStep(), handSide(), missionStep() (+6 more)
 
 ### Community 19 - "Trip"
 Cohesion: 0.07
@@ -162,25 +163,21 @@ Nodes (15): PipApp, .body, PipView, .body, Bridge, LogFile, PipWebView, PipWKWeb
 Cohesion: 0.15
 Nodes (12): cell(), changed_state(), draw_map(), dot(), line(), load(), main(), marks_of() (+4 more)
 
-### Community 21 - "rad"
-Cohesion: 0.17
-Nodes (18): bearing(), circMean(), deg(), leaveGoal(), leaveMark(), leaveOffset(), leaveSample(), legBearing() (+10 more)
+### Community 21 - "gpsWalk"
+Cohesion: 0.35
+Nodes (11): askNative(), cleanQuery(), ensureGPS(), gpsGood(), gpsWalk(), leaveStart(), looksOutside(), placeSearch() (+3 more)
 
 ### Community 23 - "panorama"
 Cohesion: 0.20
 Nodes (5): panorama(), place_of(), plain_target(), turn_phrase(), wrong_place()
-
-### Community 24 - "start"
-Cohesion: 0.22
-Nodes (14): audioLoop(), checkServer(), fallbackVoice(), hush(), invert(), pickBuiltinMic(), playLine(), speakNow() (+6 more)
 
 ### Community 25 - "plan"
 Cohesion: 0.26
 Nodes (10): chat(), find_places(), geocode(), get_route(), LatLon, llm(), maps_link(), plan() (+2 more)
 
 ### Community 28 - "dist"
-Cohesion: 0.23
-Nodes (14): dist(), endSegment(), followRoute(), learnEnd(), learnTick(), legDist(), meters(), onFix() (+6 more)
+Cohesion: 0.22
+Nodes (13): dist(), endSegment(), followRoute(), goalOf(), learnTick(), missionStart(), onFix(), ptDist() (+5 more)
 
 ### Community 32 - "trip_file"
 Cohesion: 0.27
@@ -191,25 +188,25 @@ Nodes (4): trip_dir(), trip_file(), trip_have(), trip_trace()
   server/requirements.txt · relation: references
 
 ## Knowledge Gaps
-- **36 isolated node(s):** `Vision`, `.supported`, `.jpeg`, `.depth`, `.tracking` (+31 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 189 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **10 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **36 isolated node(s):** `MapKit`, `WebKit`, `free`, `occupied`, `unknown` (+31 more)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 194 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **12 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Sensors` connect `Sensors` to `index.html (Pip screen markup and styles)`, `ARSense`, `Sensors.swift`, `Camera`, `Voice`, `Trip`, `Mic`, `.snapshot`?**
-  _High betweenness centrality (0.086) - this node is a cross-community bridge._
+- **Why does `Info.plist privacy usage descriptions (camera, mic, motion, location, local network)` connect `index.html (Pip screen markup and styles)` to `Camera`, `ARSense`, `Sensors`?**
+  _High betweenness centrality (0.074) - this node is a cross-community bridge._
 - **Are the 4 inferred relationships involving `ARSense` (e.g. with `SlamMap` and `Sensors`) actually correct?**
   _`ARSense` has 4 INFERRED edges - model-reasoned connections that need verification._
-- **What connects `Vision`, `.supported`, `.jpeg` to the rest of the system?**
+- **What connects `MapKit`, `WebKit`, `free` to the rest of the system?**
   _36 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Should `walkCue` be split into smaller, more focused modules?**
+  _Cohesion score 0.08734693877551021 - nodes in this community are weakly interconnected._
+- **Why does `ARSense` connect `ARSense` to `index.html (Pip screen markup and styles)`, `Voice`, `SlamMap`, `Sensors`?**
+  _High betweenness centrality (0.070) - this node is a cross-community bridge._
 - **Should `index.html (Pip screen markup and styles)` be split into smaller, more focused modules?**
   _Cohesion score 0.05200501253132832 - nodes in this community are weakly interconnected._
-- **Why does `ARSense` connect `ARSense` to `index.html (Pip screen markup and styles)`, `Sensors.swift`, `SlamMap`, `Sensors`, `Trip`, `.snapshot`?**
-  _High betweenness centrality (0.070) - this node is a cross-community bridge._
-- **Should `app.js` be split into smaller, more focused modules?**
-  _Cohesion score 0.05429864253393665 - nodes in this community are weakly interconnected._
 
 ### Low-confidence Hints
 _AMBIGUOUS edges — the extractor was unsure. Verify before acting on these._
