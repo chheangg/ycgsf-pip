@@ -114,6 +114,9 @@ function tap(side, kind = "tap", freq) {
 // users how much of a turn was left ("musical scale" sonification, Ahmetovic et al. 2019 and 2023, IJHCS).
 const SCALE = [523.25, 587.33, 659.26, 698.46, 783.99, 880, 987.77, 1046.5, 1174.66, 1318.51, 1396.91, 1567.98];   // C5 to G6
 const note = (i) => tap("both", "note", SCALE[Math.max(0, Math.min(SCALE.length - 1, i))]);
+// You've turned far enough: the "got it" tone plus a buzz you can feel (a success buzz, unlike a key's light tap), so a
+// turn is confirmed even when traffic drowns out the tone.
+const turnDone = () => { tap("both", "got"); toNative({ type: "haptic", style: "success" }); };
 const doneChime = () => { tap("both", "note", 1046.5); setTimeout(() => tap("both", "note", 1567.98), 130); };
 // While Pip is working on an answer you asked for (LOOK, a look around, picking the next way): a soft slow tick,
 // so silence never means "did it hear me?". The screen shows the same thing (Button States: Working).
@@ -684,6 +687,8 @@ function currentDirection() {   // answer "where do I go now?" from the route, n
 function walkCue() {   // runs every screen frame; the phone's position updates 10x a second
   const w = S.walk, p = w.pts[w.i], last = w.i === w.pts.length - 1, l = locate(p), now = Date.now();
   w.l = l;   // for the screen
+  const around = N.pose ? blockedStep(w) : undefined; if (around !== undefined) return around;
+  aroundCheck(w);
   if (!l) {   // no room tracking / no GPS: no ticks
     w.lostSince ??= now;
     if (now - w.lostSince > (p.ar ? 3000 : 10000) && now - (w.lostAt || 0) > 10000) {
@@ -716,7 +721,7 @@ function walkCue() {   // runs every screen frame; the phone's position updates 
   if (Math.abs(l.off) < cone || passes) w.onCourse = true; else if (Math.abs(l.off) > cone + 5) w.onCourse = false;
   if (w.phase === "turn") {
     if (w.onCourse) {   // facing the right way: a chime so you stop turning; after 0.4 s, the distance
-      if (w.onSince == null) tap("both", "got");
+      if (w.onSince == null) turnDone();
       w.onSince ??= now;
       if (now - w.onSince > 400) { w.phase = "go"; w.offSince = null; instruct(w, `Walk ${stepsWords(nextTurn(w, l).d)}.`); }
     } else {
@@ -788,7 +793,9 @@ async function looksOutside() {   // one camera frame: is this outdoors (not a r
     const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("room", "outside");
     const c = await (await fetch(SERVER + "/check_room", { method: "POST", body: fd, signal: AbortSignal.timeout(8000) })).json();
     log("outside before the route?", c.room, c.looking_through_doorway ? "(through a doorway)" : "", `gps ±${Math.round(S.fix?.acc ?? 0)} m`);
-    return String(c.room).toLowerCase() === "outside" && !c.looking_through_doorway;
+    if (c.looking_through_doorway) return false;
+    const room = String(c.room).toLowerCase();   // facing a wall outdoors it says "unknown": only a named room means inside
+    return room === "outside" || (room === "unknown" && gpsGood(15));
   } catch (e) { log("outside check failed", e.message); return false; }
 }
 // go: they already said yes (coming out of a building): start right away instead of asking again.
@@ -865,7 +872,7 @@ function previewGo() {   // GO key, or "yes"
   const p = S.preview; if (!p) return;
   S.preview = null;
   if (!gpsGood(30)) return NATIVE ? leaveStart({ dest: { name: p.name, to: p.to, steps: p.steps, placeId: p.placeId } }) : say("GPS is weak here. Step outside or near a window, and ask me again.");
-  S.walk = { name: p.name, path: true, ...p.path, pts: p.path.man.map((m) => ({ gps: null, s: m.s })), i: 0, k: 0, m: 0, phase: "go", onCourse: true,
+  S.walk = { name: p.name, to: p.to, steps: p.steps, entrance: p.entrance, path: true, ...p.path, pts: p.path.man.map((m) => ({ gps: null, s: m.s })), i: 0, k: 0, m: 0, phase: "go", onCourse: true,
              saidAt: 0, bearAt: 0, offPathAt: 0, lostSince: null, lostSaid: false, dest: p.entrance ? { name: p.name, to: p.to } : null };
   render();
   if (!S.tickTaught) { S.tickTaught = true; say("Follow the ticking. It ticks while you face the right way."); }
@@ -897,6 +904,89 @@ function gpsLeg(w, speakStraight) {
   w.phase = "go"; w.onCourse = true;
   if (speakStraight) instruct(w, `Walk ${distWords(nextStop(w, g.s))}.`);
 }
+// ---------- what's ahead while you walk: LiDAR every frame, decisions from the live floor map ----------
+// Trip 2026-10-25 15:04: the route said turn, the user turned into a wall and stopped, and nothing noticed (the old
+// check needs forward motion). Now LiDAR is read every frame (~10/s). Blocked for 1.5 s straight (a person walking past
+// doesn't count) -> the camera's detector names it, and the live floor map (ARKit + LiDAR, the same map room search
+// uses) is asked for a way around toward a spot 8 m further along the route. A way around: tick the user around it.
+// None, or blocked 3 times: walk back ~10 m along their own path (never to the start) and take a new route from there.
+const BLOCKED_M = 1.2, BLOCKED_FOR_MS = 1500, AROUND_GOAL_M = 8, BACK_M = 10;   // 1.2 m: two steps to stop and turn; 10 m: back past the last corner on campus paths
+function trailTick(w) {   // where you walked during this walk (room meters), for a short walk back
+  if (!N.pose || N.pose.tracking !== "ok") return;
+  const last = (w.trail ||= []).at(-1);
+  if (!last || roomDist(last, N.pose) >= 1) { w.trail.push({ x: N.pose.x, z: N.pose.z }); if (w.trail.length > 300) w.trail.shift(); }
+}
+function routeAhead(w) {   // a spot on the floor map 8 m along the way the route goes from here (room meters), or null
+  if (!slamReady()) return null;
+  const p = w.pts?.[w.i];
+  if (!w.path && p?.ar) return p.ar;                                  // a taught route: its next point is already on the map
+  if (!w.g || N.compass == null || N.heading == null) return null;
+  const b = rad(w.g.want - (N.compass - N.heading));                  // the route's direction (from north) turned into map direction
+  return { x: N.pose.x + Math.sin(b) * AROUND_GOAL_M, z: N.pose.z - Math.cos(b) * AROUND_GOAL_M };
+}
+async function aroundCheck(w, said = false) {
+  trailTick(w);
+  const t = Date.now(), d = N.depth;
+  if (w.backTo || w.detour || w.aroundBusy) return;
+  const blocked = d ? d.ahead < BLOCKED_M && (said || w.onCourse !== false) : said;
+  if (!said) {
+    if (!blocked) { w.blockedSince = null; return; }
+    w.blockedSince ??= t;
+    if (t - w.blockedSince < BLOCKED_FOR_MS) return;
+  }
+  w.blockedSince = null; w.aroundBusy = true;
+  try {
+    let what = null, dd = d;
+    const blob = lastFrame || (await frameBlob());
+    if (blob) {   // the camera names it (and stands in for LiDAR on phones without it)
+      const fd = new FormData(); fd.append("image", blob, "f.jpg");
+      const r = await (await fetch(SERVER + "/local", { method: "POST", body: fd, signal: AbortSignal.timeout(6000) })).json();
+      what = r.hazards.find((h) => h.side === "ahead")?.label || null;
+      dd ||= { ahead: r.hint === "stop" ? 0.8 : 8, left: r.clear.left > 0.4 ? 8 : 1, right: r.clear.right > 0.4 ? 8 : 1 };
+    }
+    if (S.walk !== w || !dd) return;
+    if (said && dd.ahead >= BLOCKED_M && !what) return say("I don't see anything right in front of you. Try a step forward slowly, I'll warn you.");
+    w.blocks = (w.blocks || 0) + 1;
+    const name = what ? `There's a ${what} ahead` : dd.left < 1.5 && dd.right < 1.5 ? "There's a wall ahead" : "Something's in the way";
+    const goal = w.blocks < 3 ? routeAhead(w) : null;
+    const pts = goal ? await askNative({ type: "path", x: goal.x, z: goal.z }) : null;   // A* on the live map, around what LiDAR has seen
+    log("blocked ahead:", dd.ahead.toFixed(1), "m", what || "(unnamed)", `left ${dd.left.toFixed(1)} right ${dd.right.toFixed(1)}`, `#${w.blocks}`,
+        said ? "(user said)" : "", goal ? (pts?.length ? `way around: ${pts.length} points` : "no way around on the map") : "no map goal");
+    if (S.walk !== w) return;
+    if (pts?.length > 1) {
+      w.detour = pts;
+      const first = pts.find((q) => roomDist(N.pose, q) > 0.8) || pts[0], side = angleDiff(N.heading, roomBearing(N.pose, first)) < 0 ? "left" : "right";
+      return say(`Stop. ${name}. I'll take you around it, to your ${side}. Follow the ticking.`, { urgent: true });
+    }
+    return walkBackShort(w, name);
+  } catch (e) { log("around check failed", e.message); }
+  finally { w.aroundBusy = false; }
+}
+function walkBackShort(w, why) {   // back ~10 m along your own path (not to the start), then a new route from there
+  const tr = w.trail || [];
+  let k = tr.length - 1, back = 0;
+  while (k > 0 && back < BACK_M) { back += roomDist(tr[k], tr[k - 1]); k--; }
+  if (back < 2) { say(`Stop. ${why}. I'll find another way from here.`, { urgent: true }); return rerouteWalk(w); }
+  w.backTo = tr[k]; w.trail = tr.slice(0, k + 1); w.blocks = 0;
+  say(`Stop. ${why}, and there's no way around. Let's go back about ${Math.round(back)} meters, just the way you came, not to the start. Turn around, and follow the ticking.`, { urgent: true });
+}
+function blockedStep(w) {   // going around, or walking back: the floor-map cue; undefined when neither
+  if (w.detour) {
+    while (w.detour.length > 1 && roomDist(N.pose, w.detour[0]) < 0.6) w.detour.shift();
+    if (roomDist(N.pose, w.detour.at(-1)) < 0.8) { w.detour = null; w.blocks = 0; turnDone(); say("Okay, you're around it. Back on the route."); return null; }
+    return walkToCue(w.detour[0]);
+  }
+  if (w.backTo) {
+    if (roomDist(N.pose, w.backTo) < 1) { w.backTo = null; turnDone(); say("Okay, stop. I'll find another way from here."); rerouteWalk(w); return null; }
+    return walkToCue(w.backTo);
+  }
+  return undefined;
+}
+function rerouteWalk(w) {   // a new route from where you are; a taught route can't change, so it waits for you to step around
+  if (!w.path || !w.to) return say("Feel along it to find the way around, and I'll pick up the route again.");
+  S.walk = null; render();
+  gpsWalk(w.name, w.to, null, Boolean(w.entrance), { go: true });
+}
 function gpsCue() {
   const w = S.walk, now = Date.now();
   if (!gpsGood(30)) {
@@ -906,6 +996,8 @@ function gpsCue() {
   }
   w.lostSince = null;
   if (w.lostSaid) { w.lostSaid = false; say("GPS is back."); }
+  const around = N.pose ? blockedStep(w) : undefined; if (around !== undefined) return around;
+  aroundCheck(w);
   const g = gpsWhere(w);
   w.i = w.m; w.s = g.s; w.e = g.e; w.g = g;
   if (w.total - g.s < Math.max(8, S.fix.acc)) {   // arrived
@@ -928,7 +1020,7 @@ function gpsCue() {
   if (g.off == null) return null;
   if (Math.abs(g.off) < ON_COURSE) w.onCourse = true; else if (Math.abs(g.off) > ON_COURSE + 5) w.onCourse = false;
   if (w.phase === "turn") {
-    if (w.onCourse) { if (w.onSince == null) tap("both", "got"); w.onSince ??= now; if (now - w.onSince > 400) { w.phase = "go"; w.offSince = null; instruct(w, `Walk ${distWords(nextStop(w, g.s))}.`); } }
+    if (w.onCourse) { if (w.onSince == null) turnDone(); w.onSince ??= now; if (now - w.onSince > 400) { w.phase = "go"; w.offSince = null; instruct(w, `Walk ${distWords(nextStop(w, g.s))}.`); } }
     else { w.onSince = null; if (now - w.saidAt > 5000) instruct(w, turnWords(g.off)); }
   } else {
     if (w.onCourse) w.offSince = null; else w.offSince ??= now;
@@ -1719,7 +1811,7 @@ async function missionStep(blob) {
   if (m.phase === "door") return doorWait(m);
   if (m.phase === "turn") {
     const off = ((m.turnTo - N.heading + 540) % 360) - 180;
-    if (Math.abs(off) <= 18) { m.turnTo = null; tap("both", "got"); say("Stop. It should be right in front of you."); m.phase = "scan"; m.phaseAt = Date.now(); render(); }
+    if (Math.abs(off) <= 18) { m.turnTo = null; turnDone(); say("Stop. It should be right in front of you."); m.phase = "scan"; m.phaseAt = Date.now(); render(); }
     else if (Date.now() - m.phaseAt > 20000) { m.turnTo = null; m.phase = "scan"; m.phaseAt = Date.now(); }
     return;
   }
@@ -2114,6 +2206,12 @@ async function act(r) {
     case "look": { const r = await lookAndPlan(a.goal || "where I want to go"); if (r) say(r.plan.say); return; }
     case "where": return whereAmI();
     case "back": return goBack(a.label);
+    case "blocked": {   // "dead end", "there's a wall": during a walk, look now; during a search, go back and try another way
+      if (S.walk) return aroundCheck(S.walk, true);
+      const m = S.mission;
+      if (m) return m.phase === "door" || m.phase === "handle" ? doorBlocked(m, "was blocked") : m.slam ? slamBacktrack(m, "you said it's blocked") : backtrack(m, "the user said it's blocked");
+      return say("Okay. Tell me where you want to go, and I'll find a way.");
+    }
     case "replay": return replay(a.name);
     case "learn_start": return learnStart(a.name, a.start);
     case "learn_end": return learnEnd();

@@ -175,8 +175,9 @@ struct PipWebView: UIViewRepresentable {
                 js("window.pipNative && window.pipNative.pinned(\(body["id"] as? Int ?? 0), true)")
             case "copy":
                 UIPasteboard.general.string = body["text"] as? String ?? ""
-            case "haptic":   // Button States: a key gives a light haptic the instant a finger lands
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            case "haptic":   // Button States: a key gives a light haptic the instant a finger lands; "success": a turn reached its heading
+                if body["style"] as? String == "success" { UINotificationFeedbackGenerator().notificationOccurred(.success) }
+                else { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
             case "log":
                 if let line = body["line"] as? String { LogFile.append(line); Trip.shared.write(["log": line]) }
             case "trace":

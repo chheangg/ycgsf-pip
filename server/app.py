@@ -391,6 +391,8 @@ How you work:
   get_route, then summarize: name, distance, rough turns, and ask to start.
 - A room somewhere else in the building (restroom, kitchen, bedroom, lobby) is a trip: plan it, ask once,
   then leave_here with that room as the goal, one room at a time.
+- While they're being guided (navigating_to is set) or on a trip: "dead end", "there's a wall", "I'm stuck",
+  "it's blocked", "I can't go this way" -> blocked. Don't search for the place again.
 - Small tasks need no plan. Call the tool immediately in the same turn:
   "find my keys / the remote / a chair" -> find_object; "what's around me" -> describe_surroundings;
   "go back" -> go_back; "pause/resume/repeat/stop" -> control.
@@ -471,6 +473,8 @@ TOOLS = [{"type": "function", "function": f} for f in [
     {"name": "where_am_i", "description": "Street address / nearby landmarks from GPS.", "parameters": {"type": "object", "properties": {}}},
     {"name": "go_back", "description": "Take the user back the way they came, or to a saved spot. During a search (go_to), use this when the user says this way is wrong: Pip retraces the last leg and tries another opening.",
      "parameters": {"type": "object", "properties": {"spot": {"type": "string"}}}},
+    {"name": "blocked", "description": "The user says the way is blocked while Pip is guiding them or searching: a wall, a dead end, a fence, a locked door, can't go this way. The app checks ahead with LiDAR and the camera and finds another way. Never start a new search for the place they're already going to.",
+     "parameters": {"type": "object", "properties": {}}},
     {"name": "control", "description": "pause, resume, repeat the last instruction, or stop the current guidance.",
      "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["pause", "resume", "repeat", "stop"]}}, "required": ["action"]}},
 ]]
@@ -679,6 +683,8 @@ def run_tool(sess: dict, ctx: dict, name: str, args: dict) -> tuple[dict, dict |
         return {"ok": True}, {"type": "where"}
     if name == "go_back":
         return {"ok": True}, {"type": "back", "label": args.get("spot")}
+    if name == "blocked":
+        return {"ok": True, "note": "The app is checking what's ahead and finding another way. Just say you're checking."}, {"type": "blocked"}
     if name == "control":
         return {"ok": True}, {"type": args.get("action", "stop")}
     return {"error": f"unknown tool {name}"}, None
@@ -749,6 +755,8 @@ def agent(session: str, heard: str, ctx: dict) -> dict:
             msgs.append({"role": "tool", "tool_call_id": c.get("id", fn), "content": json.dumps(result)[:2500]})
     else:
         say = "Sorry, I got stuck planning that. Can you say it another way?"
+    if any(u["tool"] == "blocked" for u in used):
+        action = {"type": "blocked"}   # "dead end" mid-walk: the brain sometimes searches the same place again after it
     if sess.pop("gps_wanted", False) and not action:
         action = {"type": "gps_on"}
     if action and action["type"] in ("describe", "look"):
