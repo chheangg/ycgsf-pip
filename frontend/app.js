@@ -30,9 +30,10 @@ window.pipNative = {
   },
   frame(id, b64) { const r = nativeWaits.get(id); nativeWaits.delete(id); r?.(b64 || null); },
   pinned(id, p) { const r = nativeWaits.get(id); nativeWaits.delete(id); r?.(p); },
-  spoke(id) { const r = nativeSpeech.get(id); nativeSpeech.delete(id); r?.(); },
+  spoke(id) { spokeAt = Date.now(); const r = nativeSpeech.get(id); nativeSpeech.delete(id); r?.(); },
   phrase(b64) {   // what you said while holding the talk bar (the phone records it)
     if (!started) return;
+    if (speaking() || askBusy) return log("(said while Pip was talking or thinking: dropped)");
     const bin = atob(b64), buf = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
     askPip({ body: buf.buffer });
@@ -781,15 +782,29 @@ function buildPath(latlons, steps) {   // -> {o, P: [{x, z, s}], total, man: [{s
   man.sort((x, y) => x.s - y.s);
   return { o, P, total, man, side };
 }
+async function looksOutside() {   // one camera frame: is this outdoors (not a room, not a view through a door)?
+  try {
+    const blob = await frameBlob(); if (!blob) return false;
+    const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("room", "outside");
+    const c = await (await fetch(SERVER + "/check_room", { method: "POST", body: fd, signal: AbortSignal.timeout(8000) })).json();
+    log("outside before the route?", c.room, c.looking_through_doorway ? "(through a doorway)" : "", `gps ±${Math.round(S.fix?.acc ?? 0)} m`);
+    return String(c.room).toLowerCase() === "outside" && !c.looking_through_doorway;
+  } catch (e) { log("outside check failed", e.message); return false; }
+}
 // go: they already said yes (coming out of a building): start right away instead of asking again.
-async function gpsWalk(name, to, serverSteps, entrance = true, { go = false, placeId = null } = {}) {   // entrance: at the end, find the door with the camera
+async function gpsWalk(name, to, serverSteps, entrance = true, { go = false, placeId = null, where = "" } = {}) {   // where: ", on Library Walk"   // entrance: at the end, find the door with the camera
   ensureGPS(); ensureCamera();
   S.find = null; S.route = null; S.back = null; S.mission = null; S.walk = null; const tok = S.walkTok = {};
   for (let i = 0; i < 30 && !gpsGood(30); i++) { if (i === 0) say("Getting your location."); await new Promise((r) => setTimeout(r, 500)); }
   if (S.walkTok !== tok) return;
-  if (!gpsGood(30)) {   // weak GPS means you're inside: get out first (with LiDAR or the camera), then this route
-    if (NATIVE && !go) return leaveStart({ dest: { name, to, steps: serverSteps, placeId } });
-    return say("GPS is weak here. Step outside or near a window, and ask me again.");
+  // Inside? Weak GPS says so, but indoors Wi-Fi location often looks good, so the camera has the last word: a street
+  // route from inside a room points you at a wall. Inside -> get out room by room first, then this route.
+  const justOut = Date.now() - (S.outsideAt || 0) < 120000;   // a trip just walked them out: don't send them back in
+  const inside = !gpsGood(30) || (NATIVE && !justOut && !(await looksOutside()));
+  if (S.walkTok !== tok) return;
+  if (inside) {
+    if (NATIVE && !S.trip?.out) return leaveStart({ dest: { name, to, steps: serverSteps, placeId } });
+    if (!gpsGood(30)) return say("GPS is weak here. Step outside or near a window, and ask me again.");
   }
   const here = { lat: S.fix.lat, lon: S.fix.lon };
   let path = null, secs = null;
@@ -810,8 +825,41 @@ async function gpsWalk(name, to, serverSteps, entrance = true, { go = false, pla
   const mins = Math.max(1, Math.round((secs || path.total / 1.3) / 60));
   S.preview = { name, path, mins, entrance, to, steps: serverSteps, placeId, acc: S.fix.acc };
   render();
-  if (go) { say(`${name} is ${distWords(path.total)} away, about ${mins} minutes walking.`); return previewGo(); }
-  say(`${name} is ${distWords(path.total)} away, about ${mins} minutes walking. Want me to take you?`);
+  if (go) { say(`${name}${where} is ${distWords(path.total)} away, about ${mins} minutes walking.`); return previewGo(); }
+  say(`${name}${where} is ${distWords(path.total)} away, about ${mins} minutes walking. Want me to take you?`);
+}
+// ---------- finding a place: Apple Maps on the phone (real places only), then its walking route ----------
+// The brain only names what to look for. Which place, how far and which street come from Apple Maps, and the words are
+// built here, so nothing about the place is invented. Best match = the name matches, then the nearest.
+const nameWords = (t) => t.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 1 && !/^(the|store|shop|at|near|in|on|a|an)$/.test(w));
+// "the nearest Target near me" -> "Target": Apple answers the phrase with a different (worse) list than the name.
+const cleanQuery = (q) => q.replace(/\b(the|a|an|some|any)\s+(nearest|closest)\b|\b(nearest|closest)\b|\b(near|around)\s+(me|here)\b|\bnearby\b|\bplease\b/gi, " ")
+  .replace(/^\s*(the|a|an|some)\s+/i, "").replace(/\s+/g, " ").trim() || q;
+// Best match: the name matches, then the nearest. A name match only wins if it isn't far beyond the nearest result
+// ("restroom" matched a "Restroom" 19 km away over "Toilets" 55 m away).
+function bestPlace(query, places, here) {
+  const want = nameWords(query.replace(/\s+\b(at|near|by|in)\b.*$/i, ""));
+  const scored = places.map((p) => {
+    const got = nameWords(p.name), hit = want.filter((w) => got.some((g) => g.startsWith(w) || w.startsWith(g))).length;
+    return { ...p, hit: want.length ? hit / want.length : 0, d: dist(here, p) };
+  });
+  const nearest = Math.min(...scored.map((p) => p.d));
+  const named = scored.filter((p) => p.hit >= 0.5 && p.d <= Math.max(2000, 3 * nearest));
+  return named.length ? named.sort((a, b) => b.hit - a.hit || a.d - b.d)[0] : scored.sort((a, b) => a.d - b.d)[0];   // else: just the nearest
+}
+async function placeSearch(query) {
+  if (!query) return say("What place should I look for?");
+  ensureGPS(); say("Looking it up.");
+  for (let i = 0; i < 20 && !gpsGood(100); i++) await new Promise((r) => setTimeout(r, 500));
+  if (!S.fix) return say("I can't get your location yet. Ask me again in a moment.");
+  const here = { lat: S.fix.lat, lon: S.fix.lon };
+  const qs = [...new Set([cleanQuery(query), query])];   // the plain name first, the words as said too
+  const answers = NATIVE ? await Promise.all(qs.map((q) => askNative({ type: "search", q, lat: here.lat, lon: here.lon }, 10000))) : [];
+  const seen = new Set(), places = answers.flatMap((r) => r?.places || []).filter((p) => { const k = `${p.name}|${p.address}`; return !seen.has(k) && seen.add(k); });
+  log("apple maps search", JSON.stringify(qs), "->", places.length ? places.map((p) => `${p.name} (${Math.round(dist(here, p))} m)`).join("; ") : answers[0]?.error || "no answer");
+  if (!places.length) return say(`I couldn't find ${query} on the map nearby. Can you say the name another way?`);
+  const p = bestPlace(cleanQuery(query), places, here);
+  return gpsWalk(p.name, { lat: p.lat, lon: p.lon }, null, true, { where: p.address ? `, ${/^\d/.test(p.address) ? "at" : "on"} ${p.address}` : "" });
 }
 function previewGo() {   // GO key, or "yes"
   const p = S.preview; if (!p) return;
@@ -1212,6 +1260,7 @@ function hopDone(m, how, c = null) {
   const p = leaveProgress(m, L.marks[L.hop0 || 0]);          // since this hop started
   S.mission = null; render(); doneChime();
   if (!T) return say(how === "outside" ? "We're outside." : "Okay, we're out.");
+  if (how === "outside") S.outsideAt = Date.now();
   T.hops++; T.nowIn = now; T.out = how === "outside"; T.atGoal = Boolean(c?.inside); if (now) T.rooms.push(now);
   T.carry = { visited: m.visited, decisions: m.decisions, history: m.history, legs: m.legs, backtracks: m.backtracks, tried: m.tried,
               leave: { marks: L.marks, os: L.os, oc: L.oc, goalB: L.goalB } };
@@ -1953,6 +2002,7 @@ async function startMic() {
 }
 function talkStart() {   // the talk bar went down (or Space): Pip stops talking and listens
   if (!started || talking) return;
+  if (speaking() || askBusy) { tap("both", "note", 330); return log("talk bar: wait, Pip is still talking or thinking"); }   // one at a time
   talking = true; chunks = []; hush();
   $("talk").classList.add("on"); toNative({ type: "haptic" }); tap("both");
   if (NATIVE) toNative({ type: "talk", on: true });
@@ -1986,11 +2036,18 @@ function status() {
            gps_accuracy_m: S.acc == null ? null : Math.round(S.acc), navigating_to: S.route?.name || S.walk?.name || null,
            next_turn: S.route?.steps[S.stepIdx]?.turn || null, saved_spots: S.spots.map((s) => s.label),
            taught_routes: Object.keys(routesStore()), hazards: S.hazards.map((h) => `${h.label} ${h.side}`),
-           learning: S.learning?.name || null,
+           learning: S.learning?.name || null, apple_search: NATIVE,
            trip: S.trip ? { goal: S.trip.goal, place_id: S.trip.dest?.placeId || null, steps_done: S.trip.hops, now_in: S.trip.nowIn || null,
                             outside: S.trip.out, at_goal: Boolean(S.trip.atGoal), spaces_so_far: S.trip.rooms } : null };
 }
+// One at a time: while Pip speaks, or waits for the brain, what you say is dropped (a stray "yeah" spoken over it
+// became a request). spokeAt: when Pip last stopped talking.
+let askBusy = false, spokeAt = 0;
 async function askPip({ body, text }) {
+  askBusy = true;
+  try { return await askPipNow({ body, text }); } finally { askBusy = false; }
+}
+async function askPipNow({ body, text }) {
   const url = `${SERVER}/talk?session=${SESSION}&ctx=${encodeURIComponent(JSON.stringify(status()))}` + (text ? `&text=${encodeURIComponent(text)}` : "");
   try {
     const r = await (await fetch(url, { method: "POST", body: body || "", signal: AbortSignal.timeout(30000) })).json();
@@ -2037,12 +2094,13 @@ async function act(r) {
   if (S.learning && a?.type === "learn_start") return say(`I'm still recording the way to ${S.learning.name}. You lead: walk there yourself, and say "we're here" when you arrive.`);
   if (S.learning && !a && DIRECTION_Q.test(heard)) return say(`This time you lead, and I remember the way. Walk to ${S.learning.name}, and say "we're here" when you arrive.`);
   if (!a && (S.walk || S.back) && DIRECTION_Q.test(heard)) return say(currentDirection());   // the route knows; the brain would guess
-  if (a && r.say && ["replay", "learn_start", "learn_end", "mission", "find", "leave", "navigate"].includes(a.type)) return act({ ...r, say: null, heard: "" });   // these speak for themselves
+  if (a && r.say && ["replay", "learn_start", "learn_end", "mission", "find", "leave", "navigate", "search"].includes(a.type)) return act({ ...r, say: null, heard: "" });   // these speak for themselves
   if (r.say && !a && r.say === lastBrainSay && Date.now() - lastBrainAt < 60000) say("Okay.");      // don't repeat the same line
   else if (r.say) say(r.say);
   if (r.say) { lastBrainSay = r.say; lastBrainAt = Date.now(); }
   if (!a) return;
   switch (a.type) {
+    case "search": return placeSearch(a.query);
     case "navigate": {   // the route takes over; coming out of a building they already agreed, so it starts at once
       S.trip = null;   // the brain only starts a route after they said yes: don't ask a second time
       return gpsWalk(a.route.name, a.route.to, a.route.steps, true, { go: true, placeId: a.route.place_id });

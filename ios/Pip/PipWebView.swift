@@ -136,6 +136,30 @@ struct PipWebView: UIViewRepresentable {
                     let json = (try? JSONSerialization.data(withJSONObject: out)).flatMap { String(data: $0, encoding: .utf8) } ?? "null"
                     DispatchQueue.main.async { self.js("window.pipNative && window.pipNative.pinned(\(id), \(json))") }
                 }
+            case "search":
+                // Apple Maps place search near the user ("Target", "a cafe", "Geisel Library"): real places only, so
+                // nothing Pip says about them is made up. Answers {places: [{name, address, lat, lon, category}]} or {error}.
+                let id = body["id"] as? Int ?? 0
+                guard let q = body["q"] as? String, let lat = body["lat"] as? Double, let lon = body["lon"] as? Double else {
+                    js("window.pipNative && window.pipNative.pinned(\(id), {error: 'bad request'})"); break
+                }
+                let req = MKLocalSearch.Request()
+                req.naturalLanguageQuery = q
+                req.region = MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: lat, longitude: lon), latitudinalMeters: 8000, longitudinalMeters: 8000)
+                req.resultTypes = [.pointOfInterest, .address]
+                MKLocalSearch(request: req).start { resp, err in
+                    var out: [String: Any] = ["error": err?.localizedDescription ?? "nothing found"]
+                    if let items = resp?.mapItems, !items.isEmpty {
+                        out = ["places": items.prefix(8).map { it -> [String: Any] in
+                            let c = it.placemark.coordinate, p = it.placemark
+                            let addr = [p.subThoroughfare, p.thoroughfare].compactMap { $0 }.joined(separator: " ")
+                            return ["name": it.name ?? q, "address": addr, "lat": c.latitude, "lon": c.longitude,
+                                    "category": it.pointOfInterestCategory?.rawValue.replacingOccurrences(of: "MKPOICategory", with: "") ?? ""]
+                        }]
+                    }
+                    let json = (try? JSONSerialization.data(withJSONObject: out)).flatMap { String(data: $0, encoding: .utf8) } ?? "null"
+                    DispatchQueue.main.async { self.js("window.pipNative && window.pipNative.pinned(\(id), \(json))") }
+                }
             case "saveMap":
                 let id = body["id"] as? Int ?? 0
                 guard sensors.useAR else { js("window.pipNative && window.pipNative.pinned(\(id), false)"); break }

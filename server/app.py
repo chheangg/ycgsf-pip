@@ -475,6 +475,9 @@ TOOLS = [{"type": "function", "function": f} for f in [
      "parameters": {"type": "object", "properties": {"action": {"type": "string", "enum": ["pause", "resume", "repeat", "stop"]}}, "required": ["action"]}},
 ]]
 
+# Whisper writes store names in lowercase ("find me the target at UCSD"), and the brain then reads a plain word.
+BRANDS = re.compile(r"\b(target|walmart|costco|starbucks|cvs|walgreens|ralphs|vons|safeway|trader joe'?s|whole foods|"
+                    r"mcdonald'?s|chipotle|in-n-out|seven eleven|7-eleven|home depot|best buy|panda express|subway)\b", re.I)
 # go_to targets that are a whole room (walked room by room), not a thing in this room (the couch, the front door).
 ROOM_GOAL = re.compile(r"\b(rest ?rooms?|bath ?rooms?|toilets?|kitchen|bed ?rooms?|living room|dining room|office|laundry|"
                        r"garage|lobby|hall ?way|reception|elevators?|stairs|exit|way out)\b", re.I)
@@ -602,12 +605,28 @@ def run_tool(sess: dict, ctx: dict, name: str, args: dict) -> tuple[dict, dict |
         return {"error": "The user hasn't said they're outside, so they're indoors (home). Maps and GPS are off. "
                          "Use taught routes (list_saved_places / follow_saved_route) or the camera (find_object)."}, None
     if name == "find_places":
+        if ctx.get("apple_search") and ctx.get("pos"):
+            # The phone searches Apple Maps itself, picks the real place, gets its walking route and asks the user in
+            # words built from that data. The brain doesn't route or describe it.
+            query = args.get("name") or str(args.get("category", "")).replace("_", " ")
+            sess["searched"] = query
+            return {"ok": True, "note": "The phone is looking this up on Apple Maps and will tell the user what it found and "
+                                        "ask before going. Don't call get_route or start_navigation; just say you're looking it up."}, \
+                {"type": "search", "query": query}
         return find_places(sess, ctx, args.get("category", "named"), args.get("name")), None
     if name == "get_route":
         return get_route(sess, ctx, args.get("place_id", "")), None
     if name == "start_navigation":
         # The brain often passes a name or a stale id on "yes": the route it just planned is the one they agreed to.
-        r = sess["routes"].get(args.get("place_id", "")) or (list(sess["routes"].values())[-1] if sess["routes"] else None)
+        pid = args.get("place_id", "")
+        r = sess["routes"].get(pid)
+        if not r and sess["places"]:
+            # They said yes to a place the brain found but never routed ("Yes, please." -> nothing, trip 14:52): route it now.
+            pid = pid if pid in sess["places"] else list(sess["places"])[-1]
+            if pid not in sess["routes"]:
+                get_route(sess, ctx, pid)
+            r = sess["routes"].get(pid)
+        r = r or (list(sess["routes"].values())[-1] if sess["routes"] else None)
         if not r:
             return {"error": "call get_route first"}, None
         return {"ok": True, "started": r["name"]}, {"type": "navigate", "route": r}
@@ -703,6 +722,12 @@ def agent(session: str, heard: str, ctx: dict) -> dict:
                          {"role": "user", "content": "(system) No tool was called. Call the right tool now (a named place: find_places "
                                                      "with category 'named', then get_route, then say the plan and ask)."}]
                 continue
+            if (not nudged and names_a_location(heard) and not heard.startswith("(app)") and used
+                    and not any(u["tool"] in ("find_places", "get_route", "start_navigation", "leave_here") for u in used)):
+                nudged = True; action = None   # e.g. where_am_i for "find me the Target at UCSD"
+                msgs += [{"role": "assistant", "content": say},
+                         {"role": "user", "content": "(system) They named a place to go. Call find_places with category 'named' and that name now."}]
+                continue
             if report_open and not used and not nudged and not say.rstrip().endswith("?"):
                 nudged = True
                 nxt = (f"get_route then start_navigation with place_id {trip['place_id']}" if trip.get("outside")
@@ -753,6 +778,8 @@ async def talk(request: Request):
         with _gpu:
             heard = get("stt")({"raw": pcm, "sampling_rate": 16000})["text"].strip()
     t_stt = time.time()
+    if not heard.startswith("(app)"):
+        heard = BRANDS.sub(lambda m: m.group(0).title(), heard)
     mode = request.query_params.get("wake", "")
     # Always on: everything is for Pip except fillers ("okay", "um") and speech the brain says isn't for it.
     if mode == "always":
