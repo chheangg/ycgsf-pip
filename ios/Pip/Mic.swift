@@ -6,6 +6,7 @@ import AVFoundation
 final class Mic {
     var onPhrase: ((Data) -> Void)?
     var paused = false                      // set while Pip is speaking so it doesn't hear itself
+    var level: Float = 0                    // loudness of the last buffer (0..1), drives the voice wave on screen
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
     private let out = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
@@ -66,10 +67,11 @@ final class Mic {
     private func handle(_ buf: AVAudioPCMBuffer) {
         guard let pcm = to16k(buf) else { return }
         let ms = Double(pcm.count) / 16.0
-        if paused { reset(); return }
+        if paused { level = 0; reset(); return }
         var e: Float = 0
         for v in pcm { e += v * v }
         let rms = sqrt(e / Float(max(pcm.count, 1)))
+        level = rms
         let loud = rms > max(0.012, floor * 3)
         if !speaking { floor = floor * 0.98 + rms * 0.02 }
         if loud { loudMs += ms; quietMs = 0 } else { quietMs += ms }

@@ -15,7 +15,9 @@ final class SlamMap {
     struct Frontier { var x: Float; var z: Float; var size: Int }
 
     private var cells = [UInt8](repeating: 0, count: SlamMap.n * SlamMap.n)
-    private var hits = [UInt8](repeating: 0, count: SlamMap.n * SlamMap.n)   // occupied evidence counter
+    private var hits = [UInt8](repeating: 0, count: SlamMap.n * SlamMap.n)   // obstacle evidence: +2 per sighting, -1 per floor sighting
+    private var walked = [Bool](repeating: false, count: SlamMap.n * SlamMap.n)  // where you walked: never an obstacle
+    static let occupiedAt: UInt8 = 4
     private(set) var doors: [UUID: Door] = [:]
     private(set) var floorY: Float?
     private let lock = NSLock()
@@ -27,6 +29,12 @@ final class SlamMap {
     }
     private func world(_ k: Int) -> SIMD2<Float> {
         SIMD2(Float(k % Self.n - Self.n / 2) * Self.res, Float(k / Self.n - Self.n / 2) * Self.res)
+    }
+
+    func reset() {
+        lock.lock(); defer { lock.unlock() }
+        cells = [UInt8](repeating: 0, count: Self.n * Self.n); hits = cells; doors = [:]; floorY = nil
+        walked = [Bool](repeating: false, count: Self.n * Self.n)
     }
 
     // MARK: updates
@@ -51,6 +59,9 @@ final class SlamMap {
 
     /// Integrate one LiDAR depth frame: hit points between knee and head height are obstacles, the space
     /// between the camera and each hit is free.
+    /// Trip data (2026-10-25) showed the old rule (2 sightings = blocked forever) blocked 18 of the 89 cells the user
+    /// actually walked through and grew the blocked area from 10 to 39 m2. Now obstacles need repeated sightings,
+    /// fade when the floor is seen there instead, and the cells you walk through (phone held up) stay free.
     func integrate(frame: ARFrame) {
         guard let sd = frame.smoothedSceneDepth ?? frame.sceneDepth else { return }
         let map = sd.depthMap
@@ -85,18 +96,34 @@ final class SlamMap {
                 }
                 guard let k = idx(pw.x, pw.z) else { continue }
                 if height > 0.15 && height < 1.9 {         // an obstacle you'd walk into (not floor, not ceiling)
-                    hits[k] = min(hits[k] &+ 1, 250)
-                    if hits[k] >= 2 { cells[k] = Cell.occupied.rawValue }
-                } else if cells[k] == Cell.unknown.rawValue {
-                    cells[k] = Cell.free.rawValue          // floor seen here
+                    hits[k] = min(hits[k] &+ 2, 30)
+                    if hits[k] >= Self.occupiedAt && !walked[k] { cells[k] = Cell.occupied.rawValue }
+                } else if height <= 0.15 {                 // floor seen here: less sure there's an obstacle
+                    if hits[k] > 0 { hits[k] -= 1 }
+                    if cells[k] == Cell.unknown.rawValue || (cells[k] == Cell.occupied.rawValue && hits[k] < Self.occupiedAt) {
+                        cells[k] = Cell.free.rawValue
+                    }
                 }
             }
         }
-        // the spot you stand on is free
-        if let k = idx(cam.x, cam.z) { cells[k] = Cell.free.rawValue }
+        // the spot you stand on is free; with the phone held up (not lying on a couch), you walked here: always free
+        if let k = idx(cam.x, cam.z) {
+            cells[k] = Cell.free.rawValue
+            if cam.y - floor > 0.9 {
+                let i = k % Self.n, j = k / Self.n
+                for dj in -1...1 { for di in -1...1 {
+                    let ii = i + di, jj = j + dj
+                    guard (0..<Self.n).contains(ii), (0..<Self.n).contains(jj) else { continue }
+                    let q = jj * Self.n + ii
+                    walked[q] = true; cells[q] = Cell.free.rawValue; hits[q] = 0
+                } }
+            }
+        }
     }
 
     // MARK: queries
+    /// The whole grid (300 x 300 bytes: 0 unknown, 1 free, 2 occupied), for the trip recorder.
+    func cellBytes() -> Data { lock.lock(); defer { lock.unlock() }; return Data(cells) }
     func doorList() -> [Door] { lock.lock(); defer { lock.unlock() }; return Array(doors.values) }
 
     /// Unexplored edges: free cells next to unknown ones, clustered; biggest first.
@@ -127,18 +154,22 @@ final class SlamMap {
         return Array(out.sorted { $0.size > $1.size }.prefix(count))
     }
 
-    /// A* from `a` to `b` on the floor plane, staying ~30 cm from obstacles; unknown space allowed but
-    /// costlier. Returns simplified waypoints (meters), or nil if no path.
+    /// A* from `a` to `b` on the floor plane, staying ~20 cm from obstacles (10 cm if that finds no way); unknown
+    /// space allowed but costlier; where you already walked is always passable. Returns waypoints (meters), or nil.
     func path(from a: SIMD2<Float>, to b: SIMD2<Float>) -> [SIMD2<Float>]? {
-        lock.lock(); let c = cells; lock.unlock()
+        path(from: a, to: b, pad: 2) ?? path(from: a, to: b, pad: 1)
+    }
+
+    private func path(from a: SIMD2<Float>, to b: SIMD2<Float>, pad: Int) -> [SIMD2<Float>]? {
+        lock.lock(); let c = cells; let walkedNow = walked; lock.unlock()
         let n = Self.n
         guard let s = idx(a.x, a.y), let g = idx(b.x, b.y) else { return nil }
-        var blocked = [Bool](repeating: false, count: n * n)   // inflate obstacles by 3 cells
+        var blocked = [Bool](repeating: false, count: n * n)   // obstacles, padded by `pad` cells
         for k in 0..<(n * n) where c[k] == Cell.occupied.rawValue {
             let i = k % n, j = k / n
-            for dj in -3...3 { for di in -3...3 where di * di + dj * dj <= 9 {
+            for dj in -pad...pad { for di in -pad...pad where di * di + dj * dj <= pad * pad {
                 let ii = i + di, jj = j + dj
-                if ii >= 0 && ii < n && jj >= 0 && jj < n { blocked[jj * n + ii] = true }
+                if ii >= 0 && ii < n && jj >= 0 && jj < n && !walkedNow[jj * n + ii] { blocked[jj * n + ii] = true }
             } }
         }
         blocked[s] = false; blocked[g] = false

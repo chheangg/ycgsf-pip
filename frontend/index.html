@@ -2,55 +2,420 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pip · walking guide</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pip</title>
+<!-- Built from the pen.dev design (design/untitled.pen). Colors, font and labels must match design/tokens.json:
+     run python3 tools/check_design.py after any change here. ui.js decides which screen shows. -->
+<script src="icons.js"></script>
+<script src="shaders.js"></script>
 <style>
-  :root { color-scheme: dark; --fg: #f5f5f5; --dim: #a3a3a3; --bg: #0a0a0a; --line: #262626; --ok: #4ade80; --warn: #facc15; --bad: #f87171; }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--fg); font: 18px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif; }
-  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 40px; display: grid; gap: 16px; }
-  h1 { margin: 0; font-size: 26px; letter-spacing: -.01em; }
-  #say { font-size: 34px; line-height: 1.25; min-height: 2.5em; font-weight: 650; }
-  .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
-  .box { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
-  .k { color: var(--dim); font-size: 14px; } .v { font-size: 20px; font-weight: 650; }
-  .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
-  video { width: 100%; max-height: 62vh; object-fit: contain; border-radius: 12px; background: #111; }
-  #start { font: inherit; font-size: 24px; padding: 18px; border-radius: 14px; border: 0; background: var(--fg); color: #000; cursor: pointer; }
-  kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; padding: 1px 7px; font-size: 15px; }
-  #keys { color: var(--dim); font-size: 15px; display: flex; flex-wrap: wrap; gap: 6px 16px; }
-  select, input { font: inherit; font-size: 15px; background: #111; color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 6px; }
-  #log { font: 13px/1.4 ui-monospace, monospace; color: var(--dim); max-height: 180px; overflow: auto; white-space: pre-wrap; }
+  @font-face { font-family: "JetBrains Mono"; src: url("fonts/JetBrainsMono.woff2") format("woff2"); font-weight: 100 800; font-display: block; }
+  :root {
+    color-scheme: dark;
+    --bg: #0A0A09; --fg: #ECE9E1; --dim: #A3A098; --line: #6B685F; --panel: #131311;
+    --accent: #FF5CA8; --ok: #FF5CA8; --bad: #FF5F56; --grid: #45433D;
+    --leader: #3A3934; --ink: #0A0A09;
+    --font: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { background: var(--bg); color: var(--fg); font-family: var(--font); -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; }
+  body { min-height: 100dvh; overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
+  button, input, select { font: inherit; color: inherit; }
+  button { background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+  .ic { width: 22px; height: 22px; fill: currentColor; flex-shrink: 0; }
+  .flip { transform: scaleX(-1); }
+  [hidden] { display: none !important; }
+
+  /* MOTION (Motion + Gestures frame). pulse.glsl = opacity swings between 1 and --low; --pp is half its period */
+  @keyframes pz { from { opacity: 1; } to { opacity: var(--low, .25); } }
+  canvas.gl { image-rendering: pixelated; }
+
+  /* one screen at a time ("Content": padding 8 20 24, gap 12); screen change: slide up 12 px + fade, 180 ms */
+  .screen { display: none; flex-direction: column; gap: 12px; min-height: 100dvh; max-width: 520px; margin: 0 auto;
+            padding: calc(env(safe-area-inset-top) + 8px) 20px max(24px, env(safe-area-inset-bottom)); }
+  .screen.on { display: flex; animation: enter 180ms ease-out; }
+  @keyframes enter { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+
+  /* Top Line: state glyph, state name, rule, → goal */
+  .top { display: flex; align-items: center; gap: 10px; height: 48px; flex-shrink: 0; }
+  .glyph { width: 10px; height: 10px; background: var(--accent); flex-shrink: 0; }
+  .glyph.bad { background: var(--bad); }
+  .glyph.live { animation: pz .83s ease-in-out infinite alternate; --low: .25; }   /* live dot; stops when muted */
+  .app { font-size: 15px; font-weight: 700; letter-spacing: 1.5px; white-space: nowrap; }
+  .app.recog { animation: pz .83s ease-in-out infinite alternate; --low: .55; }   /* RECOGNIZING pulses until Pip knows the room */
+  .rule { flex: 1; height: 1px; background: var(--line); min-width: 12px; }
+  .goal { color: var(--accent); font-size: 15px; font-weight: 600; letter-spacing: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; text-transform: uppercase; }
+
+  .stage { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 22px; min-height: 0; }
+  .stage.g { gap: 8px; } .stage.f { gap: 6px; }
+  .words { display: flex; flex-direction: column; gap: 20px; align-items: flex-start; }
+  /* Pip's words and big instructions: the design's sizes, picked by length in ui.js */
+  .say { font-weight: 800; overflow-wrap: anywhere; }
+  .s64 { font-size: 64px; letter-spacing: -3px; line-height: 65px; }
+  .s56 { font-size: 56px; letter-spacing: -2.5px; line-height: 57px; }
+  .s48 { font-size: 48px; letter-spacing: -2.5px; line-height: 49px; }
+  .s40 { font-size: 40px; letter-spacing: -1.5px; line-height: 41px; }
+  .s32 { font-size: 32px; letter-spacing: -1px; line-height: 35px; }
+  .s26 { font-size: 26px; letter-spacing: -0.5px; line-height: 30px; }
+  .grey { color: var(--line) !important; }
+  .prompt { display: flex; align-items: flex-end; gap: 8px; position: relative; max-width: 100%; }
+  .prompt .say { min-width: 0; }
+  .cursor { width: 30px; height: 60px; flex-shrink: 0; background: var(--accent); animation: blink 0.91s steps(1) infinite; }
+  .cursor.gl { background: none; animation: none; }
+  @keyframes blink { 58% { opacity: 0; } 97% { opacity: 1; } }
+  .oldline { position: absolute; pointer-events: none; }
+  #wave { width: 100%; height: 96px; display: block; flex-shrink: 0; }
+
+  /* Pad: keys on a 1 px grid (component "Key"; states from the Button States frame) */
+  .pad { display: flex; flex-direction: column; gap: 1px; padding: 1px; background: var(--grid); width: 100%; flex-shrink: 0; }
+  .krow { display: flex; gap: 1px; }
+  .key { position: relative; flex: 1 1 0; min-width: 0; height: 104px; padding: 16px; display: flex; flex-direction: column; justify-content: space-between; align-items: flex-start;
+         background: var(--bg); color: var(--fg); overflow: hidden; }
+  .key > * { position: relative; }
+  .key b { font-size: 20px; font-weight: 700; letter-spacing: -0.4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .key.row { height: 64px; flex-direction: row; justify-content: flex-start; align-items: center; gap: 12px; padding: 0 16px; }
+  .key.wide { flex: none; width: 100%; height: 64px; flex-direction: row; justify-content: center; align-items: center; gap: 12px; padding: 0 16px; }
+  .key.wide .ic { width: 20px; height: 20px; } .key.wide b { font-size: 17px; letter-spacing: 1px; }
+  .key.light { background: var(--fg); color: var(--ink); }
+  .key.hot { background: var(--accent); color: var(--ink); }
+  .key.done { background: var(--fg); color: var(--ink); }          /* Done: white flash with a check for 0.6 s */
+  .key.work { color: var(--accent); }                              /* Working: says what Pip is doing; a pink light sweeps through */
+  .key canvas.sweep { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .key.na { opacity: .4; }                                         /* Unavailable: dimmed, says why */
+  .key.pressed { background: var(--accent); color: var(--ink); }   /* Pressed: flips to pink the instant a finger lands */
+  /* Dock (Listening): Mute · Places · Setup */
+  .dock .key, .dock #mute { height: 76px; padding: 14px; gap: 6px; flex-direction: column; justify-content: space-between; align-items: flex-start; }
+  .dock .key .ic, .dock #mute .ic { width: 20px; height: 20px; }
+  .dock .key b, .dock #mute b { font-size: 15px; letter-spacing: 1px; }
+  .krow.dock { display: grid; grid-template-columns: 1fr 1fr 1fr; }   /* three equal cells (flex would widen the padded keys) */
+  .dock .mute-slot { display: flex; min-width: 0; }
+  /* Mute: one shared control (components "Mute" / "Mute · On"); ui.js moves it into the active screen */
+  #mute { width: 100%; height: 64px; padding: 0 16px; display: flex; align-items: center; gap: 12px; background: var(--bg); color: var(--fg); }
+  #mute .ic { width: 20px; height: 20px; }
+  #mute b { font-size: 17px; font-weight: 700; letter-spacing: 1px; }
+  #mute.on { background: var(--accent); color: var(--ink); }
+  #mute.pressed { background: var(--accent); color: var(--ink); }
+
+  /* Readout: KEY ········ VALUE */
+  .rows { display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; }
+  .rows.ro { padding: 10px 0; }
+  .r { display: flex; align-items: center; gap: 8px; height: 30px; font-size: 15px; }
+  .r .k { color: var(--dim); letter-spacing: 1px; white-space: nowrap; }
+  .r .dots { flex: 1; overflow: hidden; white-space: nowrap; color: var(--leader); }
+  .r .dots::before { content: "··········································································"; }
+  .r .v { font-weight: 700; white-space: nowrap; text-transform: uppercase; max-width: 70%; overflow: hidden; text-overflow: ellipsis; }
+  .v.ok { color: var(--ok); } .v.bad { color: var(--bad); } .v.dim { color: var(--dim); }
+
+  /* guiding */
+  .arrow { width: 120px; height: 120px; color: var(--accent); flex-shrink: 0; }
+  .arrow .ic { width: 100%; height: 100%; }
+  .arrow.s96 { width: 96px; height: 96px; } .arrow.s80 { width: 80px; height: 80px; }
+  .arrow.pulse { animation: pz var(--pp, 1.11s) ease-in-out infinite alternate; --low: .45; }
+  .arrow.bad { color: var(--bad); } .arrow.grey { color: var(--line); }
+  .prog { display: flex; flex-direction: column; gap: 10px; flex-shrink: 0; }
+  .prog .lbl { display: flex; justify-content: space-between; align-items: flex-end; }
+  .dist { display: flex; align-items: flex-end; gap: 4px; }
+  .dist b { font-size: 40px; font-weight: 800; letter-spacing: -1.5px; line-height: 40px; }
+  .dist span { color: var(--dim); font-size: 16px; font-weight: 600; }
+  .pct { color: var(--dim); font-size: 15px; letter-spacing: 1px; text-transform: uppercase; }
+  .segs { display: flex; gap: 3px; height: 14px; }
+  .segs i { flex: 1; background: var(--line); transition: background-color 140ms ease-out; }   /* blocks fill one at a time */
+  .segs i.on { background: var(--accent); }
+
+  /* viewfinder (find, search): panel + scan.glsl */
+  .vf { position: relative; height: 320px; background: var(--panel); overflow: hidden; flex-shrink: 0;
+        background-image: radial-gradient(var(--leader) 1px, transparent 1px); background-size: 25px 25px; }
+  .vf.short { height: 170px; }
+  .vf .c { position: absolute; width: 25px; height: 25px; border: 0 solid var(--fg); }
+  .vf .tl { left: 11px; top: 11px; border-width: 2px 0 0 2px; } .vf .tr { right: 11px; top: 11px; border-width: 2px 2px 0 0; }
+  .vf .bl { left: 11px; bottom: 11px; border-width: 0 0 2px 2px; } .vf .br { right: 11px; bottom: 11px; border-width: 0 2px 2px 0; }
+  .vf .ch, .vf .cv { position: absolute; left: 50%; top: 50%; background: var(--dim); transform: translate(-50%, -50%); }
+  .vf .ch { width: 20px; height: 1px; } .vf .cv { width: 1px; height: 20px; }
+  .vf .scan { position: absolute; left: 0; right: 0; height: 2px; background: var(--accent); opacity: .35; animation: scan 3.1s linear infinite; }
+  .vf canvas.gl { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .vf.gl { background-image: none; } .vf.gl .scan { display: none; }
+  @keyframes scan { from { top: 0; } to { top: 100%; } }
+  .vf .box { position: absolute; outline: 2px solid var(--accent); outline-offset: -1px; transform: translate(-50%, -50%); }
+  .vf .box.target { animation: pz var(--pp, .63s) ease-in-out infinite alternate; --low: .4; }   /* pulses faster when closer */
+  .vf .box::after { content: ""; position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; margin: -4px; border-radius: 50%; background: var(--accent); }
+  .vf .box.sign { outline-color: var(--fg); } .vf .box.sign::after { display: none; }
+  .vf .box.other { outline-color: var(--dim); } .vf .box.other::after { display: none; }
+  .vf .box em { position: absolute; left: -1px; top: 100%; margin-top: 6px; padding: 3px 6px; background: var(--accent); color: var(--ink); font-style: normal; font-size: 13px; font-weight: 700; letter-spacing: 1px; white-space: nowrap; text-transform: uppercase; }
+  .vf .box.sign em { background: var(--fg); } .vf .box.other em { background: var(--dim); }
+
+  /* search steps */
+  .track { display: flex; gap: 4px; flex-shrink: 0; }
+  .track div { flex: 1; display: flex; flex-direction: column; gap: 6px; font-size: 13px; line-height: 16px; letter-spacing: .5px; color: var(--dim); }
+  .track div i { height: 6px; background: var(--line); }
+  .track div.done i { background: var(--accent); }
+  .track div.now { color: var(--accent); font-weight: 700; }
+  .track div.now i { background: var(--accent); animation: pz .83s ease-in-out infinite alternate; --low: .35; }   /* the current step's bar pulses */
+
+  /* compass ring (getting bearings) */
+  .compass { display: flex; align-items: center; gap: 28px; }
+  .ring { width: 176px; height: 176px; position: relative; flex-shrink: 0; }
+  .ring svg { width: 176px; height: 176px; }
+  .ring .mid { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--accent); }
+  .ring .mid .ic { width: 36px; height: 36px; animation: pz 1.11s ease-in-out infinite alternate; --low: .45; }
+  #t-ring path { fill: var(--line); transition: fill 250ms ease-out; } #t-ring path.on { fill: var(--accent); }   /* one block fills per new direction */
+  .count { display: flex; flex-direction: column; gap: 6px; }
+  .count .lab { color: var(--dim); font-size: 15px; letter-spacing: 2px; }
+  .count .val { display: flex; align-items: flex-end; gap: 4px; }
+  .count .val b { font-size: 40px; font-weight: 800; letter-spacing: -1.5px; line-height: 40px; }
+  .count .val span { color: var(--dim); font-size: 16px; font-weight: 600; }
+  .map { width: 100%; height: 170px; background: var(--panel); display: block; flex-shrink: 0; }
+
+  /* Say Chip: what you can say */
+  .chip { display: inline-flex; align-items: center; gap: 10px; padding: 12px 16px; background: #FF5CA81A; outline: 1px solid #FF5CA866; outline-offset: -1px; max-width: 100%; }
+  .chip .ic { width: 18px; height: 18px; color: var(--accent); }
+  .chip span { font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* lists: setup, places, log */
+  .hdr { display: flex; justify-content: space-between; align-items: flex-end; padding: 12px 0 8px; flex-shrink: 0; }
+  .title { font-size: 48px; font-weight: 800; letter-spacing: -2px; }
+  .hdr .pct { padding-bottom: 8px; }
+  .list { flex: 1; display: flex; flex-direction: column; overflow-y: auto; min-height: 0; }
+  .row { position: relative; display: flex; align-items: center; gap: 10px; min-height: 52px; border-bottom: 1px solid var(--line); font-size: 15px; width: 100%; flex-shrink: 0; }
+  .row .k { flex: 1; font-weight: 600; letter-spacing: 1px; white-space: nowrap; }
+  .row .v { font-weight: 700; text-align: right; text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .v.acc { color: var(--accent); }
+  .row > .ic { width: 18px; height: 18px; color: var(--dim); }
+  .row input { background: none; border: 0; outline: 0; text-align: right; font-weight: 700; min-width: 0; flex: 1; }
+  .row select { position: absolute; inset: 0; opacity: 0; width: 100%; }
+  .switch { width: 56px; height: 32px; padding: 4px; display: flex; justify-content: flex-start; background: var(--line); flex-shrink: 0; }
+  .switch i { width: 24px; height: 24px; background: var(--ink); }
+  .switch.on { justify-content: flex-end; background: var(--accent); }
+  .sect { display: flex; align-items: center; gap: 8px; padding: 14px 0 6px; font-size: 15px; flex-shrink: 0; }
+  .sect span { color: var(--dim); letter-spacing: 2px; }
+  .sect b { color: var(--accent); font-weight: 700; letter-spacing: 1px; }
+  .place { position: relative; display: flex; align-items: center; gap: 10px; min-height: 70px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+  .place .nm { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .place .nm b { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .place .nm span { color: var(--dim); font-size: 15px; letter-spacing: 1px; text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .place .go { height: 48px; padding: 0 16px; display: flex; align-items: center; justify-content: center; gap: 6px; background: var(--accent); color: var(--ink); flex-shrink: 0; }
+  .place .go b { font-size: 17px; font-weight: 800; }
+  .place .go .ic { width: 18px; height: 18px; }
+  .place .go.pressed { background: var(--fg); }
+  .empty { color: var(--dim); font-size: 15px; padding: 14px 0; }
+  .offscreen { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
+  .typebox { display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 8px 0 16px; outline: 1px solid var(--grid); outline-offset: -1px; flex-shrink: 0; }
+  .typebox input { flex: 1; min-width: 0; background: none; border: 0; outline: 0; font-size: 15px; font-weight: 500; color: var(--fg); -webkit-user-select: text; user-select: text; }
+  .typebox input::placeholder { color: var(--dim); }
+  .typebox > .ic { width: 20px; height: 20px; color: var(--dim); }
+  .typebox button { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; background: var(--panel); }
+  .typebox button .ic { width: 18px; height: 18px; }
+  .foot { color: var(--dim); font-size: 15px; flex-shrink: 0; }
+  #log { flex: 1; min-height: 200px; overflow-y: auto; background: var(--panel); outline: 1px solid var(--line); outline-offset: -1px; padding: 14px;
+         display: flex; flex-direction: column; gap: 7px; font-size: 13px; -webkit-user-select: text; user-select: text; }
+  #log .ln { display: flex; gap: 10px; } #log .ln:first-child { margin-top: auto; }   /* newest line at the bottom */
+  #log .t { color: var(--dim); flex-shrink: 0; } #log .x { overflow-wrap: anywhere; min-width: 0; }
+  #log .bad { color: var(--bad); } #log .ok { color: var(--accent); }
+
+  /* 01 Start */
+  #scr-start { justify-content: flex-end; gap: 40px; padding-bottom: max(28px, env(safe-area-inset-bottom)); cursor: pointer; }
+  .word { display: flex; align-items: flex-end; gap: 6px; font-size: 168px; font-weight: 800; letter-spacing: -10px; line-height: 168px; }
+  .word .cursor { width: 56px; height: 124px; margin-bottom: 14px; }
+  #start { width: 100%; height: 168px; padding: 22px; background: var(--accent); color: var(--ink); display: flex; flex-direction: column; justify-content: space-between; }
+  #start .kt { align-self: flex-end; } #start .kt .ic { width: 32px; height: 32px; }
+  #start b { font-size: 56px; font-weight: 800; letter-spacing: -2.5px; line-height: 1; }
+
+  /* Reduce Motion: animations stop */
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+  /* Larger Text: keys stack to one column */
+  .large .krow { flex-direction: column; } .large .key { height: auto; min-height: 72px; } .large .dock .key, .large .dock #mute { min-height: 64px; }
 </style>
 </head>
 <body>
-<main>
-  <h1>Pip · your walking guide <span style="color:var(--dim);font-weight:400;font-size:16px">(ycgsf: you can go so far)</span></h1>
-  <button id="start">Press Enter to start (sound + microphone; camera and GPS only when needed)</button>
-  <div id="say" aria-live="assertive">Not started.</div>
-  <div class="row">
-    <div class="box"><div class="k">GPS</div><div class="v" id="gps">–</div></div>
-    <div class="box"><div class="k">Heading</div><div class="v" id="heading">–</div></div>
-    <div class="box"><div class="k">Next</div><div class="v" id="next">no route</div></div>
-    <div class="box"><div class="k">Way ahead</div><div class="v" id="clear">–</div></div>
-    <div class="box"><div class="k">Models (4090)</div><div class="v" id="server">–</div></div>
-    <div class="box"><div class="k">Voice</div><div class="v" id="listen">–</div></div>
+
+<!-- 01 Start -->
+<section class="screen on" id="scr-start" aria-label="Start">
+  <div class="word" aria-hidden="true">pip<canvas class="cursor" id="cursor"></canvas></div>
+  <button id="start" aria-label="Start Pip"><span class="kt"><script>document.write(icon("arrow-up-right"))</script></span><b>Start</b></button>
+</section>
+
+<!-- 02 Listening, 02b Planner offline, 02c GPS weak, 02d Muted, 02e Looking -->
+<section class="screen" id="scr-listen">
+  <div class="top" aria-hidden="true"><i class="glyph live" id="l-glyph"></i><span class="app" id="l-app">LISTENING</span><span class="rule"></span></div>
+  <div class="stage">
+    <div class="prompt" aria-hidden="true">   <!-- Pip's line: not read again by VoiceOver (Pip already said it) -->
+      <div class="say s64" id="say">Where to?</div><canvas class="cursor" id="l-cursor"></canvas>
+    </div>
+    <canvas id="wave" aria-hidden="true"></canvas>
+    <div class="r" id="l-server" hidden><span class="k">SERVER</span><span class="dots"></span><span class="v bad">NO REPLY</span></div>
   </div>
-  <input id="ask" placeholder="Or type to Pip and press Enter (e.g. can I go to the restroom?)" style="font-size:18px;padding:12px">
-  <video id="cam" autoplay muted playsinline></video>
-  <div class="row">
-    <label class="box"><div class="k">Camera (point it forward)</div><select id="camsel"></select></label>
-    <label class="box"><div class="k">Headphones upside down (swap L/R)</div><select id="invert"><option value="1">yes, swap</option><option value="0">no</option></select></label>
-    <label class="box"><div class="k">Model server</div><input id="srv"></label>
+  <div class="pad">
+    <div class="krow">
+      <button class="key" id="k-look" aria-label="Look around"><span id="k-look-ic"><script>document.write(icon("scan-eye"))</script></span><b id="k-look-l">Look</b></button>
+      <button class="key" id="k-find" aria-label="Find something"><span id="k-find-ic"><script>document.write(icon("crosshair"))</script></span><b id="k-find-l">Find</b></button>
+    </div>
+    <div class="krow">
+      <button class="key" id="k-back" aria-label="Go back"><script>document.write(icon("undo-2"))</script><b>Back</b></button>
+      <button class="key" id="k-spot" aria-label="Save this spot"><span id="k-spot-ic"><script>document.write(icon("map-pin"))</script></span><b id="k-spot-l">Save spot</b></button>
+    </div>
+    <div class="krow dock">
+      <div class="mute-slot"></div>
+      <button class="key" id="btn-places" aria-label="Places"><script>document.write(icon("map-pin"))</script><b>Places</b></button>
+      <button class="key" id="btn-setup" aria-label="Setup"><script>document.write(icon("sliders-horizontal"))</script><b>Setup</b></button>
+    </div>
   </div>
-  <div id="keys">
-    <span>Just talk (always listening)</span><span><kbd>H</kbd> mode: always → “Hey Pip” → hold Space</span><span><kbd>D</kbd> what's around</span><span><kbd>L</kbd> find something ("left left, up up")</span><span><kbd>N</kbd> I went through the door</span><span><kbd>B</kbd> go back</span>
-    <span><kbd>S</kbd> remember this spot</span><span><kbd>R</kbd> repeat</span><span><kbd>P</kbd> pause/resume</span>
-    <span><kbd>T</kbd> test left/right taps</span><span><kbd>←</kbd><kbd>→</kbd> I turned left/right (also while teaching a route)</span>
-    <span>Simulate walking: <kbd>W</kbd> step, <kbd>A</kbd>/<kbd>F</kbd> rotate</span>
+</section>
+
+<!-- 03 Guiding: guiding, on course, off course, hazard, lost tracking, outdoors, arrived, paused -->
+<section class="screen" id="scr-guide">
+  <div class="top" aria-hidden="true"><i class="glyph" id="g-glyph"></i><span class="app" id="g-tag">GUIDING</span><span class="rule"></span><span class="goal" id="g-goal"></span></div>
+  <div class="stage g">
+    <div class="arrow" id="g-arrow" aria-hidden="true"></div>
+    <div class="say s48" id="g-instr" aria-hidden="true"></div>
   </div>
+  <div class="prog" id="g-prog">
+    <div class="lbl"><span class="dist"><b id="g-dist">0</b><span id="g-unit">M</span></span><span class="pct" id="g-pct">0%</span></div>
+    <div class="segs" id="g-segs"></div>
+  </div>
+  <div class="rows ro">
+    <div class="r"><span class="k" id="g-k1">AHEAD</span><span class="dots"></span><span class="v" id="g-v1">–</span></div>
+    <div class="r"><span class="k">NEXT</span><span class="dots"></span><span class="v" id="g-v2">–</span></div>
+    <div class="r"><span class="k" id="g-k3">TAPS</span><span class="dots"></span><span class="v" id="g-v3">–</span></div>
+  </div>
+  <div class="pad">
+    <div class="krow">
+      <button class="key" id="k-g1"><span id="k-g1-ic"></span><b id="k-g1-l">Pause</b></button>
+      <button class="key light" id="k-g2"><span id="k-g2-ic"></span><b id="k-g2-l">Stop</b></button>
+    </div>
+    <div class="mute-slot"></div>
+  </div>
+</section>
+
+<!-- 04 Find: guide a hand to one object -->
+<section class="screen" id="scr-find" style="gap:20px">
+  <div class="top" aria-hidden="true"><i class="glyph"></i><span class="app">FINDING</span><span class="rule"></span><span class="goal" id="f-goal"></span></div>
+  <div class="vf" id="f-vf" aria-hidden="true"><span class="c tl"></span><span class="c tr"></span><span class="c bl"></span><span class="c br"></span><span class="ch"></span><span class="cv"></span><span class="scan"></span><div class="box" id="f-box" hidden><em id="f-tag"></em></div></div>
+  <div class="stage f"><div class="say s48" id="f-instr" aria-hidden="true">Looking</div></div>
+  <div class="pad">
+    <button class="key" id="k-stopfind"><script>document.write(icon("x"))</script><b>Stop finding</b></button>
+    <div class="mute-slot"></div>
+  </div>
+</section>
+
+<!-- 08 Search (restroom), 08b Search (grocery): go somewhere with no taught route -->
+<section class="screen" id="scr-search">
+  <div class="top" aria-hidden="true"><i class="glyph"></i><span class="app" id="s-app">SEARCHING 1/4</span><span class="rule"></span><span class="goal" id="s-goal"></span></div>
+  <div class="track" id="s-track" aria-hidden="true"></div>
+  <div class="vf short" id="s-vf" aria-hidden="true"><span class="c tl"></span><span class="c tr"></span><span class="c bl"></span><span class="c br"></span><span class="ch"></span><span class="cv"></span><span class="scan"></span></div>
+  <div class="rows" id="s-rows"></div>
+  <div class="stage f"><div class="say s48" id="s-instr" aria-hidden="true">Looking</div></div>
+  <div class="pad">
+    <div class="krow">
+      <button class="key" id="k-s1"><span id="k-s1-ic"></span><b id="k-s1-l">Pause</b></button>
+      <button class="key light" id="k-s2"><script>document.write(icon("square"))</script><b>Stop</b></button>
+    </div>
+    <div class="mute-slot"></div>
+  </div>
+</section>
+
+<!-- 06 Teach (orient, recording, saved); 03i Getting bearings and 03j Recognizing room use the same layout -->
+<section class="screen" id="scr-teach">
+  <div class="top" aria-hidden="true"><i class="glyph"></i><span class="app" id="t-app">TEACH 1/3</span><span class="rule"></span><span class="goal" id="t-goal"></span></div>
+  <div class="stage">
+    <div class="words">
+      <div class="say s40" id="t-big">Turn slowly all the way around</div>
+      <div class="chip" id="t-chip" hidden><script>document.write(icon("mic"))</script><span id="t-chip-t"></span></div>
+    </div>
+    <div class="compass" id="t-compass" aria-hidden="true">
+      <div class="ring"><svg viewBox="0 0 176 176" id="t-ring"></svg><div class="mid" id="t-ring-ic"></div></div>
+      <div class="count"><div class="lab">SEEN</div><div class="val"><b id="t-seen">0</b><span>/ 12</span></div><div class="lab">DIRECTIONS</div></div>
+    </div>
+    <canvas class="map" id="t-map" aria-hidden="true" hidden></canvas>
+  </div>
+  <div class="rows ro" id="t-rows" hidden>
+    <div class="r"><span class="k">WALKED</span><span class="dots"></span><span class="v" id="t-walked">0 M</span></div>
+    <div class="r"><span class="k">TURNS</span><span class="dots"></span><span class="v" id="t-turns">0</span></div>
+    <div class="r"><span class="k">TRACKING</span><span class="dots"></span><span class="v ok" id="t-track">OK</span></div>
+  </div>
+  <div class="pad">
+    <div class="krow" id="t-keys">
+      <button class="key light" id="k-tstop"><script>document.write(icon("square"))</script><b>Stop</b></button>
+    </div>
+    <div class="krow" id="t-keys-done" hidden>
+      <button class="key" id="k-tdone"><script>document.write(icon("check"))</script><b>Done</b></button>
+      <button class="key" id="k-tplaces"><script>document.write(icon("list"))</script><b>Places</b></button>
+    </div>
+    <div class="mute-slot"></div>
+  </div>
+</section>
+
+<!-- 09 Route preview (outdoors, before a walk starts) -->
+<section class="screen" id="scr-preview">
+  <div class="top" aria-hidden="true"><i class="glyph"></i><span class="app">ROUTE</span><span class="rule"></span><span class="goal" id="p-goal"></span></div>
+  <div class="stage g">
+    <div class="arrow s96" aria-hidden="true"><script>document.write(icon("directions_walk"))</script></div>
+    <div class="say s48" id="p-name">–</div>
+  </div>
+  <div class="prog"><div class="lbl"><span class="dist"><b id="p-dist">0</b><span id="p-unit">KM</span></span><span class="pct" id="p-min"></span></div></div>
+  <div class="rows ro">
+    <div class="r"><span class="k">FIRST</span><span class="dots"></span><span class="v" id="p-first">–</span></div>
+    <div class="r"><span class="k">TURNS</span><span class="dots"></span><span class="v" id="p-turns">–</span></div>
+    <div class="r"><span class="k">GPS</span><span class="dots"></span><span class="v ok" id="p-gps">–</span></div>
+  </div>
+  <div class="pad">
+    <div class="krow">
+      <button class="key hot" id="k-go" aria-label="Go, take me there"><script>document.write(icon("navigation"))</script><b>Go</b></button>
+      <button class="key" id="k-cancel"><script>document.write(icon("x"))</script><b>Cancel</b></button>
+    </div>
+    <div class="mute-slot"></div>
+  </div>
+</section>
+
+<!-- 07 Places -->
+<section class="screen" id="scr-places">
+  <div class="hdr"><div class="title">Places</div></div>
+  <div class="list" id="pl-list"></div>
+  <div class="chip"><script>document.write(icon("mic"))</script><span>“Take me to the kitchen”</span></div>
+  <div class="pad">
+    <div class="krow">
+      <button class="key row" id="k-newroute"><script>document.write(icon("route"))</script><b>New route</b></button>
+      <button class="key row" id="k-plspot"><span id="k-plspot-ic"><script>document.write(icon("map-pin"))</script></span><b id="k-plspot-l">Save spot</b></button>
+    </div>
+    <button class="key wide hot" data-close aria-label="Done, close Places"><script>document.write(icon("check"))</script><b>Done</b></button>
+  </div>
+</section>
+
+<!-- 05 Setup -->
+<section class="screen" id="scr-setup">
+  <div class="hdr"><div class="title">Setup</div></div>
+  <div class="list">
+    <button class="row" id="row-invert" role="switch" aria-label="Headphones flipped"><span class="k">HEADPHONES FLIPPED</span><span class="switch" id="v-invert"><i></i></span></button>
+    <button class="row" id="row-listen"><span class="k">LISTEN</span><span class="v" id="listen">ALWAYS</span><script>document.write(icon("chevron-right"))</script></button>
+    <div class="row"><span class="k">CAMERA</span><span class="v" id="v-camera">–</span><script>document.write(icon("chevron-right"))</script><select id="camsel" aria-label="Camera"></select></div>
+    <div class="row"><span class="k">MODELS</span><span class="v acc" id="server">–</span><script>document.write(icon("chevron-right"))</script></div>
+    <label class="row"><span class="k">SERVER</span><input id="srv" aria-label="Model server" spellcheck="false" autocapitalize="off" autocorrect="off"><script>document.write(icon("chevron-right"))</script></label>
+    <div class="row"><span class="k">VOICE</span><span class="v">KOKORO · ON DEVICE FALLBACK</span><script>document.write(icon("chevron-right"))</script></div>
+  </div>
+  <div class="typebox"><script>document.write(icon("keyboard"))</script><input id="ask" placeholder="Type to Pip" aria-label="Type to Pip" enterkeyhint="send"><button id="ask-send" aria-label="Send"><script>document.write(icon("corner-down-left"))</script></button></div>
+  <p class="foot">Prototype. Not a mobility aid.</p>
+  <div class="pad">
+    <div class="krow">
+      <button class="key row" id="k-taps"><script>document.write(icon("headphones"))</script><b>Test taps</b></button>
+      <button class="key row" id="k-viewlog"><script>document.write(icon("scroll-text"))</script><b>View log</b></button>
+    </div>
+    <button class="key wide hot" data-close aria-label="Done, close Setup"><script>document.write(icon("check"))</script><b>Done</b></button>
+  </div>
+</section>
+
+<!-- 05b Setup · Log -->
+<section class="screen" id="scr-log">
+  <div class="hdr"><div class="title">Log</div><span class="pct">LAST <span id="log-n">0</span> LINES</span></div>
   <div id="log"></div>
-</main>
+  <div class="pad">
+    <button class="key row hot" id="copylog"><span id="copylog-ic"><script>document.write(icon("copy"))</script></span><b id="copylog-l">Copy log</b></button>
+    <button class="key wide" data-back><script>document.write(icon("arrow-left"))</script><b>Back</b></button>
+  </div>
+</section>
+
+<!-- shared: ui.js moves Mute into whichever active screen is showing -->
+<button id="mute" aria-pressed="false" aria-label="Mute Pip"><span id="mute-ic"><script>document.write(icon("mic-off"))</script></span><b id="mute-l">Mute Pip</b></button>
+<video id="cam" class="offscreen" autoplay muted playsinline></video>
+
 <script src="app.js"></script>
+<script src="ui.js"></script>
 </body>
 </html>

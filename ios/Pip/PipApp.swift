@@ -19,19 +19,8 @@ struct PipView: View {
     @StateObject private var sensors = Sensors()
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Text(sensors.cameraMode).font(.caption.bold())
-                if let d = sensors.depthAhead { Text(String(format: "ahead %.1f m", d)).font(.caption) }
-                Text(String(format: "%.0f°", sensors.heading)).font(.caption)
-                Text(String(format: "%.1f m walked", sensors.distance)).font(.caption)
-                Spacer()
-            }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .accessibilityHidden(true)
-            PipWebView(sensors: sensors)
-        }
-        .background(Color.black)
+        // The whole screen is the web page (frontend/index.html, built from the pen.dev design).
+        PipWebView(sensors: sensors)
+            .background(Color(red: 10 / 255, green: 10 / 255, blue: 9 / 255))   // design token bg #0A0A09
     }
 }
