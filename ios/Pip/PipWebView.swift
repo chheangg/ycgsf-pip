@@ -50,11 +50,16 @@ struct PipWebView: UIViewRepresentable {
         let sensors: Sensors
         weak var web: WKWebView?
         private var timer: Timer?
+        private var uploadTimer: Timer?
+        private var server = "http://100.71.218.127:8100"
         private var tick = 0
 
         init(sensors: Sensors) {
             self.sensors = sensors
             super.init()
+            NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self.map { Trip.shared.upload(to: $0.server) } }
+            }
             sensors.mic.onPhrase = { [weak self] pcm in
                 self?.js("window.pipNative && window.pipNative.phrase('\(pcm.base64EncodedString())')")
             }
@@ -72,6 +77,13 @@ struct PipWebView: UIViewRepresentable {
                 timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in   // 10x a second: guidance reacts fast
                     Task { @MainActor in self?.pushState() }
                 }
+                // Trip recordings go to the model server every 30 s and on leaving the app, so they can be read there.
+                server = body["server"] as? String ?? server
+                uploadTimer?.invalidate()
+                uploadTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+                    Task { @MainActor in self.map { Trip.shared.upload(to: $0.server) } }
+                }
+                Trip.shared.upload(to: server)
             case "frame":
                 let id = body["id"] as? Int ?? 0
                 let b64 = sensors.jpeg?.base64EncodedString() ?? ""
@@ -217,12 +229,17 @@ struct PipWebView: UIViewRepresentable {
 // Trip recorder: one folder per app launch in Documents/trips/<date-time>/ with
 //   trace.jsonl  one JSON line per event: {"t": seconds since 1970, "sensors" | "pip" | "log": ...}
 //   photos/<t>.jpg  what the camera saw;  maps/<t>.bin  the floor map (300 x 300 bytes, 10 cm cells)
-// Only the newest 10 trips are kept. Copy them off the phone with tools/pull_trip.sh.
+// Only the newest 10 trips are kept on the phone. Each one is also copied to the model server (upload below),
+// into C:\ycgsf\trips on the 4090; tools/pull_trip.sh fetches it from there.
 final class Trip {
     static let shared = Trip()
     private let q = DispatchQueue(label: "pip.trip")
     private let dir: URL
     private var handle: FileHandle?
+    @MainActor private var uploading = false
+    @MainActor private var uploadFailed = false
+    @MainActor private var uploaded: Set<String> = []   // older trips the server has whole (they no longer change)
+    @MainActor private var background = UIBackgroundTaskIdentifier.invalid
 
     private init() {
         let fm = FileManager.default
@@ -245,7 +262,74 @@ final class Trip {
 
     func save(_ data: Data, as sub: String, ext: String) {
         let name = String(format: "%.1f.%@", Date().timeIntervalSince1970, ext)
-        q.async { try? data.write(to: self.dir.appendingPathComponent(sub).appendingPathComponent(name)) }
+        // atomic: the uploader must never read a half-written photo
+        q.async { try? data.write(to: self.dir.appendingPathComponent(sub).appendingPathComponent(name), options: .atomic) }
+    }
+
+    /// Copy every trip on the phone to the server (server/app.py, /trips): ask what it has, send the rest.
+    /// Called every 30 s and when the app goes to the background; an unreachable server is retried next time.
+    @MainActor func upload(to server: String) {
+        guard !uploading, let base = URL(string: server)?.appendingPathComponent("trips") else { return }
+        uploading = true
+        // iOS lets an app finish work for ~30 s after it leaves the screen; the handler runs on the main thread.
+        background = UIApplication.shared.beginBackgroundTask { MainActor.assumeIsolated { Trip.shared.endBackground() } }
+        Task { @MainActor in
+            defer { uploading = false; endBackground() }
+            let root = dir.deletingLastPathComponent()
+            let names = ((try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []).sorted()
+            for name in names where !uploaded.contains(name) {
+                do {
+                    try await send(root.appendingPathComponent(name), to: base.appendingPathComponent(name))
+                    if name != dir.lastPathComponent { uploaded.insert(name) }
+                } catch {
+                    if !uploadFailed { write(["log": "trip upload stopped (\(error.localizedDescription)), retrying every 30 s"]) }
+                    uploadFailed = true
+                    return
+                }
+            }
+            if uploadFailed { write(["log": "trip upload working again"]) }
+            uploadFailed = false
+        }
+    }
+
+    @MainActor private func endBackground() {
+        if background != .invalid { UIApplication.shared.endBackgroundTask(background); background = .invalid }
+    }
+
+    @MainActor private func send(_ local: URL, to remote: URL) async throws {
+        struct Have: Decodable { let trace: Int; let files: [String]? }
+        let have = try JSONDecoder().decode(Have.self, from: try await http(remote, "GET"))
+        // trace.jsonl: from the size the server has, up to the last whole line, at most 4 MB per request
+        if let h = try? FileHandle(forReadingFrom: local.appendingPathComponent("trace.jsonl")) {
+            defer { try? h.close() }
+            var sent = have.trace
+            while true {
+                try h.seek(toOffset: UInt64(sent))
+                guard let chunk = try h.read(upToCount: 4_000_000), let end = chunk.lastIndex(of: 10) else { break }
+                var url = URLComponents(url: remote.appendingPathComponent("trace"), resolvingAgainstBaseURL: false)!
+                url.queryItems = [URLQueryItem(name: "offset", value: String(sent))]
+                let now = try JSONDecoder().decode(Have.self, from: try await http(url.url!, "POST", chunk[...end])).trace
+                guard now > sent, chunk.count == 4_000_000 else { break }
+                sent = now
+            }
+        }
+        let onServer = Set(have.files ?? [])
+        for sub in ["photos", "maps"] {
+            let folder = local.appendingPathComponent(sub)
+            for file in (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? [] where !onServer.contains("\(sub)/\(file)") {
+                let data = try Data(contentsOf: folder.appendingPathComponent(file))
+                _ = try await http(remote.appendingPathComponent(sub).appendingPathComponent(file), "PUT", data)
+            }
+        }
+    }
+
+    private func http(_ url: URL, _ method: String, _ body: Data? = nil) async throws -> Data {
+        var req = URLRequest(url: url, timeoutInterval: 20)
+        req.httpMethod = method
+        let (data, resp) = if let body { try await URLSession.shared.upload(for: req, from: body) }
+                           else { try await URLSession.shared.data(for: req) }
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+        return data
     }
 }
 

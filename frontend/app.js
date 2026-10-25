@@ -2175,7 +2175,11 @@ async function askPipNow({ body, text }) {
 }
 // Short answers the phone handles itself: "yes" / "no" after a route preview, and what to find after the FIND key.
 const YES = /^\W*(yes|yeah|yep|yup|sure|ok(ay)?|go|let'?s go|take me( there)?|start|please)\b/i, NO = /^\W*(no|nope|cancel|never ?mind|not now|stop)\b/i;
+// "Mark that" / "that was wrong": a MARK line in the trip recording, so a bad moment can be found later
+// (tools/trip_report.py lists marks first). The rest of the sentence is kept as the note.
+const MARK = /^\W*(mark (that|this|it)|that was wrong)\b/i;
 function answerLocally(heard) {
+  if (MARK.test(heard)) { log("MARK", heard); say("Marked."); return true; }
   if (S.preview && NO.test(heard)) { previewCancel(); return true; }
   if (S.preview && YES.test(heard)) { previewGo(); return true; }
   if (S.findNext && Date.now() - S.findNext < 15000) {
@@ -2305,7 +2309,7 @@ async function start() {
     S.sim = true; onFix({ lat: +qs.get("lat"), lon: +qs.get("lon") }, 5, false);
     say("Simulated start position set. Use W to walk, A and F to turn.");
   }
-  if (NATIVE) { toNative({ type: "ready" }); setTimeout(warmVoice, 3000); }   // the phone's mic, natively
+  if (NATIVE) { toNative({ type: "ready", server: SERVER }); setTimeout(warmVoice, 3000); }   // the phone's mic, natively
   else startMic().catch((e) => log("mic:", e.message));   // ask for the laptop mic now, not on the first hold
   audioLoop();
 }

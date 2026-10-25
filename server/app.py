@@ -1353,3 +1353,58 @@ def backtrack(req: BacktrackRequest):
     except Exception:
         say = "GPS is weak, so I'll take you back the way you came. Turn around."
     return {"steps": steps, "say": say, "ms": round((time.time() - t0) * 1000)}
+
+
+# --- TRIPS: the phone's trip recordings, copied here so they can be read over SSH without a cable --------
+# The phone asks what's here (GET), then sends the rest: new trace lines (appended at the size the server has)
+# and photos and floor maps it doesn't have yet. Layout matches the phone: <trip>/trace.jsonl, photos/, maps/.
+
+TRIPS_DIR = os.getenv("TRIPS_DIR", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "trips"))
+TRIP_NAME = re.compile(r"\d{8}-\d{6}")                     # the phone's folder name: yyyyMMdd-HHmmss
+TRIP_FILE = {"photos": re.compile(r"\d+\.\d\.jpg"), "maps": re.compile(r"\d+\.\d\.bin")}
+
+
+def trip_dir(trip: str) -> str:
+    if not TRIP_NAME.fullmatch(trip):
+        raise HTTPException(400, "bad trip name")
+    return os.path.join(TRIPS_DIR, trip)
+
+
+@app.get("/trips/{trip}")
+def trip_have(trip: str):
+    """What the server already has of one trip: {trace: bytes of trace.jsonl, files: ["photos/<t>.jpg", ...]}."""
+    d = trip_dir(trip)
+    trace = os.path.join(d, "trace.jsonl")
+    files = [f"{sub}/{name}" for sub in TRIP_FILE if os.path.isdir(os.path.join(d, sub))
+             for name in os.listdir(os.path.join(d, sub))]
+    return {"trace": os.path.getsize(trace) if os.path.exists(trace) else 0, "files": files}
+
+
+@app.post("/trips/{trip}/trace")
+async def trip_trace(trip: str, offset: int, request: Request):
+    """Append new trace lines. Written only if `offset` is the size the server has, so a resend never doubles
+    lines; the answer is the size now, and the phone continues from there."""
+    d = trip_dir(trip)
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, "trace.jsonl")
+    size = os.path.getsize(path) if os.path.exists(path) else 0
+    if offset == size:
+        body = await request.body()
+        with open(path, "ab") as f:
+            f.write(body)
+        size += len(body)
+    return {"trace": size}
+
+
+@app.put("/trips/{trip}/{sub}/{name}")
+async def trip_file(trip: str, sub: str, name: str, request: Request):
+    """One photo or floor map. Written to a temp name first, so a cut-off upload never looks complete."""
+    if sub not in TRIP_FILE or not TRIP_FILE[sub].fullmatch(name):
+        raise HTTPException(400, "bad file name")
+    d = os.path.join(trip_dir(trip), sub)
+    os.makedirs(d, exist_ok=True)
+    tmp = os.path.join(d, name + ".part")
+    with open(tmp, "wb") as f:
+        f.write(await request.body())
+    os.replace(tmp, os.path.join(d, name))
+    return {"ok": True}

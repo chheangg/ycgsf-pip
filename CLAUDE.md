@@ -37,9 +37,19 @@ Shared components: Status Bar, Key, Talk, Talk · On, Deafen, Deafen · On, Voic
 ## Testing: Mac or phone
 
 - **On the Mac (test it yourself):** anything that doesn't need someone walking around. That covers screens, animations and layout (through Xcode, on the plugged-in iPhone or the iOS Simulator), the design check, builds, speech and taps, server replies, and reading logs and trip recordings.
-- **On the phone (leave it to the user):** Pip's main job, which needs a person moving through a real place. That covers pathfinding, guiding, teaching and following routes, GPS walks, finding a room or a grocery aisle, obstacle warnings, ARKit/LiDAR tracking and camera finding. Don't build simulated walks or fake environments to test these. Ask the user to try it, then copy the trip recording off the phone (`trips/` is git-ignored):
-  `xcrun devicectl device copy from --device <id> --domain-type appDataContainer --domain-identifier com.ycgsf.pip --source Documents/trips --destination trips`
-  and diagnose from the real data.
+- **On the phone (leave it to the user):** Pip's main job, which needs a person moving through a real place. That covers pathfinding, guiding, teaching and following routes, GPS walks, finding a room or a grocery aisle, obstacle warnings, ARKit/LiDAR tracking and camera finding. Don't build simulated walks or fake environments to test these. Ask the user to try it, then diagnose from the trip recording (below).
+
+## Trip recordings: how to debug a walk
+
+The phone records every app launch as one trip, and uploads it to the 4090 PC every 30 s and when the app leaves the screen. No cable or phone is needed to read it, from any Mac on the team's Tailscale with SSH access to `hackteam@100.71.218.127` (needs your SSH key in the PC's `authorized_keys`).
+
+- **Get it:** `tools/pull_trip.sh` copies the newest trip into `trips/<trip>/` (git-ignored) and writes its report. `tools/pull_trip.sh list` shows all trips; `tools/pull_trip.sh <trip>` gets one.
+- **Read the report first:** `trips/<trip>/report/timeline.txt` (marks at the top, then what was heard, said, logged and decided, with the position every 2 s), `map.png` (floor map and the whole walk) and `mark-<n>.png` (the map, path, heading and Pip's plan at each mark). Open the PNGs with Read.
+- **Zoom in:** `python3 tools/trip_report.py trips/<trip> --at <seconds>` prints every recorded line from 10 s before to 10 s after.
+- **Marks:** the user says "mark that" or "that was wrong" (holding Hold to talk) when something goes wrong. It's logged as `MARK <what they said>` about 1 s after the moment. Start the diagnosis at the marks.
+- **Raw files** in each trip: `trace.jsonl` (one JSON line each: `sensors` 5x/s, `pip` state 2x/s, `log`, `voice`; `t` is Unix seconds), `photos/<t>.jpg` (camera every 2 s), `maps/<t>.bin` (floor map every 4 s: 300 x 300 bytes, 10 cm cells, 0 unknown, 1 floor, 2 obstacle).
+- **Where they live:** on the PC in `C:\ycgsf\trips\` (stored by `server/app.py`, `/trips` routes), on the phone in `Documents/trips/` (newest 10 only). If the upload failed (no network), copy from the phone over USB: `xcrun devicectl device copy from --device <id> --domain-type appDataContainer --domain-identifier com.ycgsf.pip --source Documents/trips --destination trips`.
+- **Server logs** are on the PC too: `C:\Users\hackteam\pip.log` (API), `pip-brain.log` and `pip-see.log` (the two model servers).
 
 ## Clean code contract
 
