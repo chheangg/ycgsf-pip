@@ -1,0 +1,10 @@
+# Install CUDA torch first: pip install torch --index-url https://download.pytorch.org/whl/cu124
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+httpx>=0.27
+numpy
+pillow
+transformers>=4.45
+accelerate>=0.33
+ultralytics>=8.3

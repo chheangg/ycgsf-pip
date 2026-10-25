@@ -303,7 +303,11 @@ async function planTo(body) {
 
 // ---------- backtrack: GPS -> plan back; no GPS -> reverse the remembered trail ----------
 async function goBack(label) {
-  if (S.mission) return backtrack(S.mission, "the user said this way is wrong");   // uses GPS only if it's already on; otherwise the remembered path
+  if (S.mission) {   // during a search: a door that won't open, or a wrong way -> back and try another
+    const m = S.mission;
+    if (m.phase === "door" || m.phase === "handle") return doorBlocked(m, "was locked or stuck");
+    return m.slam ? slamBacktrack(m, "you said this way is wrong") : backtrack(m, "the user said this way is wrong");
+  }
   const spot = label ? S.spots.find((s) => s.label.toLowerCase().includes(label.toLowerCase())) : S.spots.at(-1);
   if (S.gpsOk && (spot?.pos || S.crumbs[0])) return planTo({ to: spot?.pos || S.crumbs[0] });
   endSegment(null);
@@ -781,12 +785,16 @@ function buildPath(latlons, steps) {   // -> {o, P: [{x, z, s}], total, man: [{s
   man.sort((x, y) => x.s - y.s);
   return { o, P, total, man, side };
 }
-async function gpsWalk(name, to, serverSteps, entrance = true) {   // entrance: at the end, find the door with the camera
+// go: they already said yes (coming out of a building): start right away instead of asking again.
+async function gpsWalk(name, to, serverSteps, entrance = true, { go = false } = {}) {   // entrance: at the end, find the door with the camera
   ensureGPS(); ensureCamera();
   S.find = null; S.route = null; S.back = null; S.mission = null; S.walk = null; const tok = S.walkTok = {};
   for (let i = 0; i < 30 && !gpsGood(30); i++) { if (i === 0) say("Getting your location."); await new Promise((r) => setTimeout(r, 500)); }
   if (S.walkTok !== tok) return;
-  if (!gpsGood(30)) return say("GPS is weak here. Step outside or near a window, and ask me again.");
+  if (!gpsGood(30)) {   // weak GPS means you're inside: get out first (with LiDAR or the camera), then this route
+    if (NATIVE && !go) return leaveStart({ name, to, steps: serverSteps });
+    return say("GPS is weak here. Step outside or near a window, and ask me again.");
+  }
   const here = { lat: S.fix.lat, lon: S.fix.lon };
   let path = null, secs = null;
   if (NATIVE) {
@@ -804,15 +812,16 @@ async function gpsWalk(name, to, serverSteps, entrance = true) {   // entrance: 
   if (!path || path.total < 5) return say(`I can't get a walking route to ${name} right now.`);
   // 09 Route preview: say how far it is (numbers from the route, not the AI) and ask before a long walk starts
   const mins = Math.max(1, Math.round((secs || path.total / 1.3) / 60));
-  S.preview = { name, path, mins, entrance, to, acc: S.fix.acc };
+  S.preview = { name, path, mins, entrance, to, steps: serverSteps, acc: S.fix.acc };
   render();
+  if (go) { say(`${name} is ${distWords(path.total)} away, about ${mins} minutes walking.`); return previewGo(); }
   followUntil = Date.now() + 20000;   // a plain "yes" counts, no "Hey Pip" needed
   say(`${name} is ${distWords(path.total)} away, about ${mins} minutes walking. Want me to take you?`);
 }
 function previewGo() {   // GO key, or "yes"
   const p = S.preview; if (!p) return;
   S.preview = null;
-  if (!gpsGood(30)) return say("GPS is weak here. Step outside or near a window, and ask me again.");
+  if (!gpsGood(30)) return NATIVE ? leaveStart({ name: p.name, to: p.to, steps: p.steps }) : say("GPS is weak here. Step outside or near a window, and ask me again.");
   S.walk = { name: p.name, path: true, ...p.path, pts: p.path.man.map((m) => ({ gps: null, s: m.s })), i: 0, k: 0, m: 0, phase: "go", onCourse: true,
              saidAt: 0, bearAt: 0, offPathAt: 0, lostSince: null, lostSaid: false, dest: p.entrance ? { name: p.name, to: p.to } : null };
   render();
@@ -970,7 +979,7 @@ async function readSigns() {   // one camera frame -> signs (lines close togethe
 function noteSigns(m, signs) {
   m.view = { at: Date.now(), signs: signs.map((sg) => ({ ...sg, hit: signMatch(sg.text, m.signWords) })) };   // for the viewfinder
   for (const sg of signs) {
-    const hit = signMatch(sg.text, m.signWords);
+    const hit = m.leave && NOT_EXIT.test(sg.text) ? null : signMatch(sg.text, m.signWords);   // "No exit", "Alarm will sound"
     if (!m.seenSigns.includes(sg.text)) { m.seenSigns.push(sg.text); log("sign:", JSON.stringify(sg.text), hit ? `matches "${hit}"` : "", sg.d ? `${sg.d.toFixed(1)} m` : "far"); }
     if (!hit) continue;
     const old = m.signs.find((o) => o.text === sg.text);
@@ -989,6 +998,7 @@ function signTarget(m) {   // the best matching sign not walked to yet: a spot 1
 }
 function goToSign(m, t, instead = false) {
   m.decisions.push({ x: N.pose.x, z: N.pose.z });
+  if (m.leave) leaveMark(m, `sign "${t.sign}"`);
   m.history.push(`saw a sign "${t.sign}"; went toward it`);
   m.target = t;
   const dir = relDir(roomBearing(N.pose, t)), where = dir === "ahead" ? "straight ahead" : dir === "behind" ? "behind you" : `on your ${dir}`;
@@ -1034,6 +1044,11 @@ function spun(ring) {   // the 30-degree block the phone faces now counts as see
   if (!ring.dirs.includes(b)) { ring.dirs = [...ring.dirs, b]; ring.seen = ring.dirs.length; }
 }
 async function slamMap(m, why) {
+  if (m.leave && why !== "start" && !/came back/.test(why)) {      // a decision point: out yet? closer than at the mark?
+    const c = await leaveCheck(m);
+    if (S.mission !== m || c.verdict === "done") return;
+    if (c.verdict === "back") return slamBacktrack(m, c.why);
+  }
   m.phase = "map"; m.phaseAt = Date.now(); render();
   say(m.decisions.length ? "Let me map this spot. Turn slowly all the way around." : "I'll map the room first. Turn slowly all the way around.");
   let turned = 0, last = N.heading, readAt = -999, step = -1; const t0 = Date.now(), reads = [];
@@ -1041,7 +1056,7 @@ async function slamMap(m, why) {
   await new Promise((r) => setTimeout(r, 1500));
   while (S.mission === m && Math.abs(turned) < 330 && Date.now() - t0 < 30000) {
     turned += ((N.heading - last + 540) % 360) - 180; last = N.heading;
-    spun(ring);
+    spun(ring); if (m.leave) leaveSample(m);
     if (Math.floor(Math.abs(turned) / 30) > step) { step = Math.floor(Math.abs(turned) / 30); note(step); }   // every 30 degrees, the next note up
     if (Math.abs(turned) - readAt >= 30) { readAt = Math.abs(turned); reads.push(readSigns().then((sg) => S.mission === m && noteSigns(m, sg))); }   // signs every 30 degrees
     await new Promise((r) => setTimeout(r, 100));
@@ -1050,7 +1065,8 @@ async function slamMap(m, why) {
   if (S.mission !== m) return;
   doneChime(); say("Okay, stop.", { urgent: true });
   await Promise.race([Promise.all(reads), new Promise((r) => setTimeout(r, 1500))]);
-  await slamCheckRoom(m);                                           // are we already there?
+  if (m.leave) { if (await leaveOutside(m, true)) return; }         // already outside?
+  else await slamCheckRoom(m);                                      // are we already there?
   if (S.mission !== m || m.done) return;
   const st = signTarget(m);
   if (st) return goToSign(m, st);                                   // a sign that says where the goal is beats guessing
@@ -1070,12 +1086,14 @@ async function slamDecide(m, why) {
   m.phase = "decide"; render();
   const cands = slamCandidates(m);
   if (!cands.length) return slamBacktrack(m, "I can't see any way through from here");
-  const r = await post("/decide_slam", { goal: m.room, candidates: cands.map(({ x, z, ...c }) => c), memory: m.history.slice(-6), place: m.place || "unknown" });
+  const send = cands.map(({ x, z, ...c }) => (m.leave ? { ...c, toward: towardWords(m, { x, z }) } : c));
+  const r = await post("/decide_slam", { goal: m.room, candidates: send, memory: m.history.slice(-6), place: m.place || "unknown", leaving: Boolean(m.leave) });
   if (S.mission !== m) return;
-  log("slam decide:", r.choice, r.why, JSON.stringify(cands.map((c) => `${c.id} ${c.distance_m}m ${c.direction}${c.visited ? " V" : ""}`)));
+  log("slam decide:", r.choice, r.why, JSON.stringify(send.map((c) => `${c.id} ${c.distance_m}m ${c.direction}${c.toward ? ` (${c.toward})` : ""}${c.visited ? " V" : ""}`)));
   if (r.choice === "backtrack") return slamBacktrack(m, r.why);
   const c = cands.find((x) => x.id === r.choice);
   m.decisions.push({ x: N.pose.x, z: N.pose.z });                  // a junction to come back to
+  if (m.leave) leaveMark(m, `${c.kind} ${c.distance_m} m ${c.direction}`);
   m.history.push(`${why}: in ${m.place || "?"}; went for ${c.kind} ${c.distance_m} m ${c.direction} (${r.why})`);
   m.target = c; say(r.say);
   slamGo(m);
@@ -1099,6 +1117,7 @@ function slamNext(m) {   // next waypoint at least 0.5 m away
 function slamStep(m) {
   if (!slamReady()) { if (Date.now() - (m.trackSaidAt || 0) > 10000) { m.trackSaidAt = Date.now(); say("I'm losing track. Hold the phone steady and point it around the room."); } return; }
   const t = Date.now();
+  if (m.leave) { leaveSample(m); if (m.phase === "go" || m.phase === "through") leaveOutside(m); }
   if (m.phase === "go" && m.target) {
     const d = roomDist(N.pose, m.target);
     if (t - (m.readAt || 0) > 2500) {   // signs ahead while walking (an aisle sign, "Restrooms ->")
@@ -1129,10 +1148,110 @@ function slamBacktrack(m, why) {
   m.backtracks = (m.backtracks || 0) + 1;
   const back = m.decisions.pop();
   if (!back || m.backtracks > 4) return giveUp(m);
+  m.leave?.marks.pop();                                             // going back to that mark; a new one is dropped there
   m.history.push(`dead end: ${why}`);
   m.phase = "slamback"; m.backTo = back; m.target = { ...back, kind: "junction", id: "back" }; render();
   say(`${why[0].toUpperCase() + why.slice(1)}. Let's go back, about ${Math.max(1, Math.round(roomDist(N.pose, back)))} meters.`);
   askNative({ type: "path", x: back.x, z: back.z }).then((pts) => { if (S.mission === m) m.path = pts || [back]; });
+}
+
+// ---------- LEAVE: get out of this room or building, toward where you're going ----------
+// The long-term plan knows where you're going; this gets you out of where you are. Turn around once (map the room, read
+// exit signs) -> pick a real door or opening -> drop a mark (room position + GPS) -> walk there -> at the next decision
+// point, measure: outside yet? closer than at the mark? A way that led away is walked back to its mark and the next one
+// is tried. Progress is judged only at decision points, never mid-walk (the numbers jump around while you move), and
+// an exit sign beats the measurements. After two wrong ways any way out will do: the route outside sorts out the rest.
+const EXIT_WORDS = ["exit", "way out", "lobby", "main entrance", "entrance", "ground floor", "street"];
+const NOT_EXIT = /\b(no|not an?)\s+exit\b|\balarm\b|emergency\s+(exit\s+)?only|do not (use|enter)|staff only/i;
+function leaveStart(dest) {   // dest: {name, to: {lat, lon}, steps} for a trip, or null to just get outside
+  ensureGPS();
+  log("leave", dest ? `toward ${dest.name}` : "to outside");
+  say(dest ? `You're inside, so first I'll get you out, toward ${dest.name}.` : "Okay, let's find the way out.");
+  missionStart(dest?.name || "outside", "door", [], { dest: dest?.to ? dest : null, marks: [], sideways: 0 });
+}
+function leaveSample(m) {   // compass minus room heading, averaged as unit vectors: turns room directions into map directions
+  if (N.compass == null || N.heading == null) return;
+  const a = rad(N.compass - N.heading);
+  m.leave.os = (m.leave.os || 0) + Math.sin(a); m.leave.oc = (m.leave.oc || 0) + Math.cos(a);
+}
+const leaveOffset = (m) => (m.leave.os || m.leave.oc ? (deg(Math.atan2(m.leave.os, m.leave.oc)) + 360) % 360 : null);
+function leaveGoal(m) {   // which way the destination is from here (degrees from north), if GPS is good enough to tell
+  const to = m.leave.dest?.to;
+  if (!to || !S.fix || Date.now() - S.fix.t > 10000) return null;
+  return dist(S.fix, to) > 2 * S.fix.acc ? bearing(S.fix, to) : null;
+}
+function leaveMark(m, what) {
+  const L = m.leave, g = leaveGoal(m) ?? L.goalB ?? null;
+  if (g != null) L.goalB = g;
+  const gps = S.fix && Date.now() - S.fix.t < 10000 ? { ...S.fix } : null;
+  L.marks.push({ what, x: N.pose?.x ?? null, z: N.pose?.z ?? null, gps, goalB: g, t: Date.now() });
+  log("leave mark:", what, N.pose ? `room ${N.pose.x.toFixed(1)},${N.pose.z.toFixed(1)}` : "", gps ? `gps ±${Math.round(gps.acc)} m` : "no gps",
+      g != null ? `goal at ${Math.round(g)}°` : "");
+}
+function leaveProgress(m) {   // meters closer to the destination since the last mark (+ = closer), or null if it can't be measured
+  const k = m.leave.marks.at(-1), to = m.leave.dest?.to;
+  if (!k || !to) return null;
+  if (k.gps && gpsGood(25)) {   // GPS: only a change bigger than the two fixes' error counts
+    const d0 = dist(k.gps, to), d1 = dist(S.fix, to);
+    if (Math.abs(d0 - d1) > (k.gps.acc + S.fix.acc) / 2) return { closer: d0 - d1, via: "gps" };
+  }
+  const off = leaveOffset(m);
+  if (k.x != null && N.pose && k.goalB != null && off != null) {   // the room map: meters walked toward the destination's direction
+    const b = rad(k.goalB - off);
+    return { closer: (N.pose.x - k.x) * Math.sin(b) - (N.pose.z - k.z) * Math.cos(b), via: "room" };
+  }
+  return null;
+}
+function towardWords(m, c) {   // does this door or opening point toward the destination?
+  const off = leaveOffset(m), g = m.leave.goalB ?? leaveGoal(m);
+  if (off == null || g == null || !N.pose) return null;
+  const a = Math.abs(angleDiff(g, (roomBearing(N.pose, c) + off) % 360));
+  return a < 50 ? "toward the destination" : a > 130 ? "away from the destination" : "sideways";
+}
+async function leaveCheck(m) {   // -> {verdict: "done" | "back" | "on", why}
+  if (await leaveOutside(m, true)) return { verdict: "done" };
+  if (S.mission !== m) return { verdict: "done" };
+  const k = m.leave.marks.at(-1), p = leaveProgress(m);
+  if (!k || !p) return { verdict: "on" };
+  log("leave progress:", p.closer.toFixed(1), "m closer via", p.via, "since", k.what);
+  const strict = (m.backtracks || 0) < 2 && !/^sign/.test(k.what);
+  if (p.closer <= -3 && strict) {
+    m.leave.sideways = 0;
+    m.history.push(`the ${k.what} led ${Math.round(-p.closer)} m away from ${m.room}`);
+    return { verdict: "back", why: `this way takes us away from ${m.room}` };
+  }
+  if (p.closer >= 2) { m.leave.sideways = 0; say(`Good, that's about ${Math.round(p.closer)} meters closer.`); }
+  else if (strict && ++m.leave.sideways >= 3) {
+    m.leave.sideways = 0;
+    m.history.push(`three ways in a row didn't get closer to ${m.room}`);
+    return { verdict: "back", why: "we're not getting any closer this way" };
+  }
+  return { verdict: "on" };
+}
+// Outside = GPS good for a few seconds AND the camera agrees (Wi-Fi location can look good indoors, and a view through a
+// glass door looks like outside). force: ask the camera now (at a decision point) as long as GPS is fair.
+async function leaveOutside(m, force = false) {
+  const L = m.leave, t = Date.now();
+  L.goodSince = gpsGood(12) ? (L.goodSince ?? t) : null;
+  if (force ? !gpsGood(30) : !(L.goodSince && t - L.goodSince > 4000)) return false;
+  if (L.checking || t - (L.checkedAt || 0) < 8000) return false;
+  L.checking = true; L.checkedAt = t;
+  try {
+    const blob = await frameBlob(); if (!blob) return false;
+    const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("room", "outside");
+    const c = await (await fetch(SERVER + "/check_room", { method: "POST", body: fd })).json();
+    log("outside?", c.room, c.looking_through_doorway ? "(through a doorway)" : "", `gps ±${Math.round(S.fix?.acc ?? 0)} m`);
+    if (S.mission !== m || String(c.room).toLowerCase() !== "outside" || c.looking_through_doorway) return false;
+    leaveDone(m);
+    return true;
+  } catch { return false; }
+  finally { L.checking = false; }
+}
+function leaveDone(m) {
+  const d = m.leave.dest;
+  S.mission = null; render(); doneChime();
+  say("We're outside.");
+  if (d) gpsWalk(d.name, d.to, d.steps, true, { go: true });   // hand back to the long-term plan, from where you came out
 }
 
 // ---------- GO TO A ROOM: door -> line up -> walk -> through -> verify (done only on proof) ----------
@@ -1157,12 +1276,13 @@ function track(m, hit) {
   m.centered = m.centered ? Math.abs(m.dxs) < leave : Math.abs(m.dxs) < enter;
   return m.centered ? "center" : sideOf(m.dxs);
 }
-function missionStart(room, via, proof) {
+function missionStart(room, via, proof, leave = null) {
   ensureCamera();
-  S.find = null; S.route = null; S.back = null; S.walk = null; S.walkTok = null;
+  S.find = null; S.route = null; S.back = null; S.walk = null; S.walkTok = null; S.preview = null;
   const m = S.mission = { room, via: via || "door", proof: proof || ["toilet", "sink"], phase: "plan", phaseAt: Date.now(),
-                door: null, doorAt: 0, proofHit: null, proofAt: 0, saidAt: 0, lastSay: "", tries: 0, history: [], planning: false };
-  const goal = goalOf(room); m.signWords = goal.words; m.signs = []; m.seenSigns = []; m.item = goal.item ? room : null;   // "cereal" is an item, not a room
+                door: null, doorAt: 0, proofHit: null, proofAt: 0, saidAt: 0, lastSay: "", tries: 0, history: [], planning: false, leave };
+  const goal = leave ? { words: EXIT_WORDS, item: false } : goalOf(room);
+  m.signWords = goal.words; m.signs = []; m.seenSigns = []; m.item = goal.item ? room : null;   // "cereal" is an item, not a room
   log("mission", room, "reads signs for:", m.signWords.join(", "));
   if (slamReady()) { m.slam = true; m.visited = []; m.decisions = []; return slamMap(m, "start"); }
   lookAround("start");
@@ -1170,13 +1290,19 @@ function missionStart(room, via, proof) {
 // Deduction step: the user turns slowly in place while Pip grabs ~8 views; the vision model describes each
 // and the brain picks the most promising direction (doorway, hallway, a door with a sign...).
 function giveUp(m) {
-  say(`I'm stuck finding the ${m.room}. Can you tell me anything about where it is, or should I learn the way with you?`);
+  say(m.leave ? "I'm stuck finding the way out. Do you know which way the exit is, or is there someone nearby to ask?"
+              : `I'm stuck finding the ${m.room}. Can you tell me anything about where it is, or should I learn the way with you?`);
   S.mission = null; render();
 }
 async function lookAround(why) {
   const m = S.mission; if (!m || m.planning) return;
   m.looks = (m.looks || 0) + 1;
   if (m.looks > 6 || (m.backtracks || 0) >= 3) return giveUp(m);
+  if (m.leave && why !== "start" && !/came back/.test(why)) {      // a decision point: out yet? closer than at the mark?
+    m.planning = true; const c = await leaveCheck(m); m.planning = false;
+    if (S.mission !== m || c.verdict === "done") return;
+    if (c.verdict === "back") return backtrack(m, c.why);
+  }
   m.planning = true; m.phase = "sweep"; m.phaseAt = Date.now(); render();
   await ensureCamera();
   say(m.history.length ? "Let me look around here. Turn slowly to your right, all the way around." :
@@ -1204,7 +1330,8 @@ async function lookAround(why) {
   m.thinking = true;
   try {
     const fd = new FormData(); views.forEach((b, i) => fd.append("images", b, `v${i}.jpg`));
-    fd.append("goal", m.room); fd.append("history", JSON.stringify(m.history.slice(-8)));
+    fd.append("goal", m.leave ? `the way out of this building${m.leave.dest ? `, toward ${m.room}` : ""}` : m.room);
+    fd.append("history", JSON.stringify(m.history.slice(-8)));
     const r = await (await fetch(SERVER + "/panorama", { method: "POST", body: fd })).json();
     if (!S.mission) return;
     const p = r.plan || {};
@@ -1215,6 +1342,10 @@ async function lookAround(why) {
     }
     m.history.push(`${why}: now in ${place}${m.place ? ` (was ${m.place})` : ""}; looked around (${(r.views || []).map((v) => v.facing || "?").join(", ")}); chose ${p.target || p.search} because ${p.why || "?"}`);
     if (place !== "unknown") m.place = place;
+    if (p.reached && m.leave) {                                    // "at the exit": outside counts only when measured
+      if (await leaveOutside(m, true)) return;
+      p.reached = false; p.search = "door"; p.target = p.target || "the door out";
+    }
     if (p.reached) { m.phase = "verify"; m.phaseAt = Date.now(); say(p.say || `I think this is the ${m.room}. Let me check.`); return; }
     if (p.backtrack) { m.planning = false; return backtrack(m, p.why || "nothing here leads on"); }
     const nameOf = (x) => String(typeof x === "string" ? x : x?.id || x?.kind || "").toLowerCase();   // tried: words, or door objects (LiDAR)
@@ -1222,6 +1353,7 @@ async function lookAround(why) {
       m.planning = false; return backtrack(m, "I'm going in circles here");
     }
     m.via = (p.search || "door").toLowerCase(); m.target = p.target || m.via;
+    if (m.leave) leaveMark(m, m.target);
     m.door = null; m.doorAt = 0; m.dxs = null; m.centered = false; m.lastDir = null; m.gotTapped = false; m.doorChecks = 0;
     if (headings.length && Number.isInteger(p.view) && headings[p.view] != null) {
       // Measured turn: guide until the phone faces the chosen view's heading, then find the landmark.
@@ -1261,30 +1393,90 @@ async function obstacleCheck(m) {
   } catch {}
 }
 
-// Guide the camera (and the hand behind it) onto the door handle, then say where to reach.
+// ---------- DOORS: what kind, where the handle is, push or pull; LiDAR says when it's open ----------
+// The vision model reads the door once (and again only when the measurements can't tell); Pip's words come from its
+// fields, never from its prose. A closed door is about an arm's length away; once it opens, LiDAR suddenly sees meters
+// past it, so "it's open" is a measurement, said at once, not a guess every few seconds. LiDAR reads through glass, so
+// glass and automatic doors keep the camera check. A door that won't open is given up on, and another way is tried.
+const HANDLE_LABELS = ["door handle", "door knob", "lever handle", "push bar"];
+const doorHow = (d) => /pull/.test(d?.opens || "") ? "Pull it toward you, step back as it swings, then walk around its edge."
+  : /push/.test(d?.opens || "") ? "Push it open, and keep your hand on it as you walk through."
+  : "Try pushing first. If it doesn't move, pull.";
+const handSide = (d) => (d?.handle === "left" || d?.handle === "right" ? d.handle : null);
+async function readDoor() {   // one look by the vision model -> its fields, or null
+  const blob = lastFrame || (await frameBlob()); if (!blob) return null;
+  const fd = new FormData(); fd.append("image", blob, "f.jpg");
+  const d = await (await fetch(SERVER + "/door", { method: "POST", body: fd })).json();
+  log("door:", JSON.stringify(d), N.depth ? `lidar ${N.depth.ahead.toFixed(2)} m` : "");
+  return d;
+}
+function doorWaitStart(m) {   // now wait for it to open; LiDAR counts only for an opaque door right in front
+  const ahead = N.depth?.ahead, info = m.handleInfo || {};
+  m.dr = { info, since: Date.now(), checkedAt: Date.now(), openSince: 0, nudgeAt: 0, nudges: 0,
+           closedAt: ahead ?? 0, lidar: ahead != null && ahead < 1.5 && !["automatic", "revolving"].includes(info.type) };
+  m.phase = "door"; m.phaseAt = Date.now(); render();
+}
+function doorThrough(m, text) {
+  doneChime(); say(text || "It's open. Walk through slowly, about two steps.");
+  m.dr = null; m.phase = "through"; m.phaseAt = Date.now();
+  if (m.slam && !m.doorPos && N.pose) m.doorPos = { x: N.pose.x, z: N.pose.z };
+  render();
+}
+function doorBlocked(m, why) {   // locked, too heavy, or not a door after all: try another way
+  m.dr = null; m.history.push(`a door ${why}; don't try it again`);
+  if (m.slam) { if (m.target) m.visited.push({ x: m.target.x, z: m.target.z }); return slamMap(m, `a door ${why}`); }
+  m.tried = [...(m.tried || []), m.target || m.via];
+  return lookAround(`a door ${why}`);
+}
+async function doorWait(m) {   // every frame while the door is closed
+  const dr = m.dr || (doorWaitStart(m), m.dr), t = Date.now();
+  if (dr.lidar && N.depth && N.depth.ahead > Math.max(1.8, dr.closedAt + 1.0)) {   // it sees past the door now
+    dr.openSince ||= t;
+    if (t - dr.openSince > 600) return doorThrough(m);
+  } else dr.openSince = 0;
+  const waited = t - dr.since;
+  if (waited > 45000) { say("This door isn't opening. Let's try another way."); return doorBlocked(m, "wouldn't open"); }
+  if (t - dr.checkedAt > (dr.lidar ? 8000 : 4000) && !m.doorBusy) {   // the camera, as a check on LiDAR or instead of it
+    dr.checkedAt = t; m.doorBusy = true;
+    try {
+      const d = await readDoor();
+      if (S.mission !== m || m.phase !== "door" || !d) return;
+      if (d.door === "open" || d.door === "ajar") return doorThrough(m, d.door === "ajar" ? "It's open a little. Open it the rest of the way and walk through slowly." : null);
+    } catch {} finally { m.doorBusy = false; }
+  }
+  if (t - (dr.nudgeAt || dr.since) > 12000 && !speaking()) {   // a short reminder, never a stream of them
+    dr.nudgeAt = t; dr.nudges++;
+    const side = handSide(dr.info);
+    say(waited > 20000 && !dr.saidLocked ? (dr.saidLocked = true, "If it's locked, tell me, and I'll find another way.")
+        : dr.nudges % 2 && side ? `It's still closed. The handle is on your ${side}.` : `It's still closed. ${doorHow(dr.info)}`);
+  }
+}
+
+// Guide the camera (and the hand behind it) onto the handle, then say where to reach and how it opens.
 async function handleStep(m, blob) {
-  const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("target", "door handle");
-  const r = await (await fetch(SERVER + "/locate", { method: "POST", body: fd })).json();
-  if (!S.mission || m.phase !== "handle") return;
-  const t = Date.now();
-  if (!r.found) {
-    if (t - m.phaseAt > 15000) { say("I can't spot the handle. Feel along the door edge, about waist height."); m.phase = "door"; m.phaseAt = t; render(); }
+  const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("labels", HANDLE_LABELS.join(","));
+  const r = await (await fetch(SERVER + "/scan", { method: "POST", body: fd })).json();
+  if (S.mission !== m || m.phase !== "handle") return;
+  const t = Date.now(), info = m.handleInfo || {}, side = handSide(info);
+  const hit = Object.values(r.hits || {}).filter((h) => h.score >= 0.15).sort((a, b) => b.score - a.score)[0];   // knob, lever or bar
+  if (!hit) {
+    if (t - m.phaseAt > 15000) { say(`I can't spot the handle. Feel along the ${side ? `${side} edge of the door` : "door's edges"}, about waist height.`); doorWaitStart(m); }
     return;
   }
-  m.door = { dx: r.dx, size: r.size }; m.doorAt = t;
-  const dir = track(m, r);                                   // smoothed left/right with a dead zone
-  const vert = r.dy < -0.18 ? "up" : r.dy > 0.18 ? "down" : null;
+  m.door = { dx: hit.dx, size: hit.size }; m.doorAt = t;
+  const dir = track(m, hit);                                 // smoothed left/right with a dead zone
+  const vert = hit.dy < -0.18 ? "up" : hit.dy > 0.18 ? "down" : null;
   const cueDir = dir !== "center" ? dir : vert;
   if (cueDir) {
     m.gotTapped = false;
     if (cueDir !== m.lastDir) { m.lastDir = cueDir; mSay(`${cueDir} ${cueDir}`, 0); } else mSay(`${cueDir} ${cueDir}`, 5000);
     return;
   }
-  const h = m.handleInfo?.handle_height;
+  const h = info.handle_height;
   const height = h === "low" ? "low, about knee height" : h === "chest" ? "at about chest height" : "at about waist height";
-  const how = /pull/.test(m.handleInfo?.opens || "") ? "pull it toward you" : /push/.test(m.handleInfo?.opens || "") ? "push the door" : "open the door";
-  say(`The handle is right in front of you. Reach straight forward, ${height}, then ${how}.`);
-  m.phase = "door"; m.phaseAt = t; render();                 // now wait until the door is open
+  const reach = N.depth && N.depth.ahead > 0.9 ? "Take a small step, then reach forward" : "Reach straight forward";
+  say(`Got it, the handle is right in front of you. ${reach}${side ? ` with your ${side} hand` : ""}, ${height}. ${doorHow(info)}`);
+  doorWaitStart(m);
 }
 
 // Facing a blank wall with nothing to aim at: tell the user, like a friend would.
@@ -1303,35 +1495,21 @@ async function wallCheck(m) {
   } catch {}
 }
 
-// At a door: the vision model says open/closed, where the handle is, push or pull. Coach until it's open.
+// Arrived at a door: one look decides what kind it is; open -> through, closed -> the handle (or wait for it to open).
 async function doorStep(m) {
   if (m.doorBusy) return;
   m.doorBusy = true;
   try {
-    const blob = lastFrame || (await frameBlob());
-    const fd = new FormData(); fd.append("image", blob, "f.jpg");
-    const d = await (await fetch(SERVER + "/door", { method: "POST", body: fd })).json();
-    if (!S.mission) return;
-    log("door:", JSON.stringify(d));
-    if (d.door === "none") { return lookAround("thought I was at a door but don't see one up close"); }
-    if (d.door === "open" || d.type === "automatic") {
-      say(d.type === "automatic" ? "It's an automatic door. Just walk straight ahead slowly, it'll open." : "It's open. Walk through slowly, about two steps.");
-      m.phase = "through"; m.phaseAt = Date.now(); if (m.slam && !m.doorPos && N.pose) m.doorPos = { x: N.pose.x, z: N.pose.z }; render(); return;
-    }
-    if (d.type === "sliding" && m.phase !== "door") {
-      say(`It's a sliding door. ${/left/.test(d.opens) ? "Slide it to the left." : /right/.test(d.opens) ? "Slide it to the right." : "Find the edge and slide it open."}`);
-      m.phase = "door"; m.phaseAt = Date.now(); render(); return;
-    }
-    if (d.type !== "sliding" && m.phase !== "door" && m.phase !== "handle") {   // hinged (or unsure: most doors are) -> find the handle
-      m.handleInfo = d; m.phase = "handle"; m.phaseAt = Date.now(); m.dxs = null; m.centered = false; m.lastDir = null; render();
-      say(`The door's closed. Let's find the handle${d.handle === "left" || d.handle === "right" ? `, it's on the ${d.handle}` : ""}. Point the camera at it.` +
-          (d.type === "unsure" ? " If it slides instead, tell me." : ""));
-      return;
-    }
-    const first = m.phase !== "door";
-    m.phase = "door"; m.phaseAt = Date.now(); m.doorChecks = (m.doorChecks || 0) + 1; render();
-    if (first) say(d.say || "The door's closed. Find the handle and open it.");
-    else if (m.doorChecks % 3 === 0) say(d.say || "The door still looks closed.");   // gentle reminder, not every check
+    const d = await readDoor();
+    if (S.mission !== m || !d) return;
+    if (d.door === "none") { const why = "thought I was at a door but don't see one up close"; return m.slam ? slamMap(m, why) : lookAround(why); }
+    if (d.door === "open" || d.door === "ajar") return doorThrough(m, d.door === "ajar" ? "It's open a little. Open it the rest of the way and walk through slowly." : null);
+    m.handleInfo = d;
+    if (["automatic", "revolving", "sliding"].includes(d.type)) { say(d.say); return doorWaitStart(m); }
+    // hinged, or unsure (most doors are): find the handle first; say which side so the free hand can go there
+    say(`${d.say} Point the phone at the door, and I'll guide you to the handle.` +
+        (d.type === "unsure" ? " If it slides instead, tell me." : ""));
+    m.phase = "handle"; m.phaseAt = Date.now(); m.dxs = null; m.centered = false; m.lastDir = null; render();
   } catch (e) { log("door check failed", e); }
   finally { if (S.mission) m.doorBusy = false; }
 }
@@ -1380,6 +1558,7 @@ function backtrack(m, why) {
   m.backtracks = (m.backtracks || 0) + 1;
   if (m.backtracks > 3) return giveUp(m);
   m.tried = [...(m.tried || []), m.target || m.via];
+  m.leave?.marks.pop();
   const leg = (m.legs || []).pop();
   if (!leg) { say("This is a dead end, and I don't have a way back recorded. Let me look around."); return lookAround(why); }
   m.history.push(`dead end: ${why}. Went back from ${leg.target}; don't try it again.`);
@@ -1419,6 +1598,8 @@ function missionCue() {
 async function missionStep(blob) {
   const m = S.mission;
   if (m.planning || m.phase === "plan" || m.phase === "sweep") return;
+  if (m.leave) leaveOutside(m);
+  if (m.phase === "door") return doorWait(m);
   if (m.phase === "turn") {
     const off = ((m.turnTo - N.heading + 540) % 360) - 180;
     if (Math.abs(off) <= 18) { m.turnTo = null; tap("both", "got"); say("Stop. It should be right in front of you."); m.phase = "scan"; m.phaseAt = Date.now(); render(); }
@@ -1515,9 +1696,6 @@ async function missionStep(blob) {
         return lookAround(`reached the ${m.target || m.via}`);                // other landmarks: look around, deduce
       }
       if (seeDoor) { const dir = track(m, m.door); if (dir !== "center" && Math.abs(m.dxs) > 0.28) mSay(`a bit ${dir}`, 5000); }
-      return;
-    case "door":       // waiting for the door to be opened: re-check every few seconds
-      if (since > 3500 && !m.doorBusy) return doorStep(m);
       return;
     case "through":
       if (since > 7000) return lookAround("walked through a door");
@@ -1817,6 +1995,7 @@ async function act(r) {
     case "navigate": return gpsWalk(a.route.name, a.route.to, a.route.steps);
     case "find": return findStart(a.target);   // the app says it (the brain once said "I found it" before looking)
     case "mission": return missionStart(a.room, a.via, a.proof);
+    case "leave": return leaveStart(a.to ? { name: a.name || "there", to: a.to, steps: a.steps } : null);
     case "describe": return describe("What's around me?", false);
     case "gps_on": ensureGPS(); return;
     case "look": { const r = await lookAndPlan(a.goal || "where I want to go"); if (r) say(r.plan.say); return; }

@@ -13,14 +13,12 @@ is a prototype, not a mobility aid. Use it with your cane or dog, not instead of
 
 ## What's in this repo
 
-This repo is the app: the phone side of Pip. The model server (`server/app.py`, the endpoints listed below) lives
-in [chheangg/ycgsf](https://github.com/chheangg/ycgsf).
-
 ```
 frontend/      the app itself: index.html, app.js (all guiding logic), ui.js (screens), icons.js, shaders.js
 ios/           iPhone shell: a WKWebView that runs frontend/, plus ARKit + LiDAR, camera, mic, GPS and native audio
+server/        the model server for the RTX 4090 (app.py), its Windows start and restart scripts
 design/        the pen.dev design (untitled.pen), its tokens and GLSL shaders
-tools/         check_design.py (does the app match the design?), export_shaders.py
+tools/         deploy.sh (server to the 4090), check_design.py (does the app match the design?), export_shaders.py
 graphify-out/  code knowledge graph (see CLAUDE.md)
 run.sh         serves frontend/ on http://localhost:5173
 ```
@@ -74,11 +72,22 @@ flowchart TD
      brain must pick one of those real candidates by id, so it can't invent a door. Signs are read on the phone
      (Apple Vision) and a matching sign wins over a guess. Without LiDAR, Pip takes 8 photos during a slow turn,
      the vision model describes each one, and the brain picks the most promising way.
+   - *Getting out first.* A trip to a place outside usually starts inside a building, where GPS is weak. Pip gets
+     you out before the route starts: you turn around once (it maps the room and reads exit signs), it picks a real
+     door or opening and drops a mark (room position and GPS), you walk there, and at the next decision point it
+     measures whether you got closer. A way that leads away gets walked back to its mark, and the next way is tried.
+     It only judges progress at decision points, because the numbers jump around while you walk. An exit sign
+     overrides the measurements. You're outside only when GPS has been good for a few seconds and the camera agrees
+     (Wi-Fi location can look good indoors). Then the walking route starts from the door you came out of.
 4. **The short-term planner gets you there.** An A* path on the floor map (or the GPS path outdoors) becomes taps
    and short phrases like "Turn left, to 10 o'clock" and "Walk 2 meters, about 3 steps". LiDAR stops you when
-   something is close in front. At a door, the vision model checks open or closed, hinged or sliding, handle side
-   and push or pull, and coaches you until it's open. At the end, OWLv2 finds the object and Pip guides your hand
-   ("left, left, up").
+   something is close in front. At a door, the vision model reads it once: open or closed, hinged, sliding,
+   automatic or revolving, handle side and height, and push or pull from what's visible (hinge knuckles on your side
+   mean pull, a push plate or the door stop on your side means push). Pip guides the phone to the handle, says which
+   hand and how to open it, and then LiDAR tells it the moment the door opens, because it suddenly sees past it.
+   Glass fools LiDAR, so glass and automatic doors keep the camera check. A door that won't open after 45 seconds,
+   or that you say is locked, is skipped and Pip finds another way. At the end, OWLv2 finds the object and Pip
+   guides your hand ("left, left, up").
 5. **It checks before it says you've arrived.** A room counts only when the detector sees proof of it (a toilet
    for a restroom) in 3 frames in a row and the vision model agrees you're inside, not just looking in through a
    doorway. Wrong room, all walls, or going in circles sends it back to the long-term planner to retrace and try
@@ -107,7 +116,7 @@ Maps and places: Nominatim and Overpass (OpenStreetMap) and OSM foot routing by 
 
 ## Where it runs
 
-| | Phone (this repo) | GPU box ([ycgsf](https://github.com/chheangg/ycgsf)) |
+| | Phone (`frontend/`, `ios/`) | GPU box (`server/`) |
 |---|---|---|
 | Hears | mic, phrase cutting | Whisper |
 | Thinks | guiding loops in `frontend/app.js` | brain, vision model, `/plan`, `/decide_slam`, `/panorama` |
@@ -119,7 +128,19 @@ audio it switches the audio session to playback-only and the mic stops listening
 
 ## Run it
 
-### Model server (on the GPU machine, from the ycgsf repo)
+### Model server
+
+Our server is a Windows PC with an RTX 4090 on our Tailscale network. To ship `server/` to it:
+
+```
+tools/deploy.sh
+```
+
+It backs up the running `app.py`, copies the new one over SSH, stops every running copy of Pip on that PC (the
+scheduled task, its restart loop, every API process and both llama-servers, nothing else), starts it again, and
+waits for `/warmup`. Set `PIP_BOX=user@host` to deploy somewhere else.
+
+To set up a new GPU machine by hand:
 
 ```
 pip install torch --index-url https://download.pytorch.org/whl/cu124
@@ -135,7 +156,7 @@ uvicorn server.app:app --host 0.0.0.0 --port 8100
 Put `kokoro-v1.0.onnx` and `voices-v1.0.bin` in `tts/` (or point `TTS_DIR` at them). Call `POST /warmup` once so
 the first request isn't slow, and `GET /health` to see what's loaded. `--cache-ram 0` on the brain matters: with
 idle slots saved to RAM, each new request stalled 4 to 9 seconds. `server/run_pip.bat` is the Windows startup
-script we used.
+script and `server/restart_pip.ps1` the restart.
 
 ### iPhone
 
@@ -160,7 +181,10 @@ Say things like:
 - "Find my keys." / "Where's the door handle?"
 - "What's around me?"
 - "Remember the way from the couch to the bathroom." Walk it, then "We're here."
-- "Walk me to the library." (outdoors; Pip turns on GPS only when you name a place or say you're outside)
+- "Walk me to the library." (Pip turns on GPS only when you name a place or say you're outside; from inside a
+  building it walks you out first)
+- "Get me out of here." / "Where's the exit?"
+- "It's locked." (at a door: Pip gives up on it and finds another way)
 - "Go back." / "Stop." / "Repeat that."
 
 Listening modes (Setup, or H): always on (default), "Hey Pip" first, or push to talk. With VoiceOver, Magic Tap

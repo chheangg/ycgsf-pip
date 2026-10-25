@@ -1,6 +1,8 @@
 # Pip app (iPhone + screen) and design
 
-This repo holds Pip's app: `frontend/` (the screen and app logic), `ios/` (the iPhone app that shows `frontend/`), `design/` (the pen.dev design `design/untitled.pen`, its tokens and shaders) and `tools/` (the design check and shader export). `run.sh` serves `frontend/` on localhost. The model server, trip recordings and trip tools live in the separate ycgsf repo (`../ycgsf-pip` on this Mac).
+This repo holds Pip: `frontend/` (the screen and app logic), `ios/` (the iPhone app that shows `frontend/`), `server/` (the model server on the RTX 4090, reached over Tailscale), `design/` (the pen.dev design `design/untitled.pen`, its tokens and shaders) and `tools/` (the design check, shader export, and `deploy.sh`). `run.sh` serves `frontend/` on localhost. Trip recordings and trip tools live in the separate ycgsf repo (`../ycgsf-pip` on this Mac).
+
+- **Deploy the server** with `tools/deploy.sh`: it copies `server/` to the 4090 PC over Tailscale (`hackteam@100.71.218.127`), stops every running copy of Pip there (`server/restart_pip.ps1`: the task, its restart loop, every API and both llama-servers; nothing else on that PC), restarts, and warms the models up. The previous `app.py` is kept next to it as `app.py.bak-<time>`.
 
 ## Design contract with pen.dev
 
