@@ -1,4 +1,4 @@
-# Pip
+# Pip app (iPhone + screen) and design
 
 This repo holds Pip's app: `frontend/` (the screen and app logic), `ios/` (the iPhone app that shows `frontend/`), `design/` (the pen.dev design `design/untitled.pen`, its tokens and shaders) and `tools/` (the design check and shader export). `run.sh` serves `frontend/` on localhost. The model server, trip recordings and trip tools live in the separate ycgsf repo (`../ycgsf-pip` on this Mac).
 
