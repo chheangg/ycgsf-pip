@@ -59,7 +59,9 @@ flowchart TD
    for Pip (you talking to someone else, the TV) are dropped.
 2. **The brain decides.** Qwen3-14B gets what you said, what the phone knows (GPS, heading, saved spots, taught
    routes) and a set of tools: find places, get a route, follow a taught route, record a route, go to a room or
-   object, find an object, describe, look and plan, where am I, go back. It can call up to 5 tools per turn, then
+   object, find an object, describe, look and plan, where am I, go back, and look up Home Depot products and
+   their store-specific aisle/bay labels through the `home_depot` tool (`list_stores`, `search_products`,
+   `get_location` actions). It can call up to 5 tool rounds per turn, then
    replies with one sentence and at most one action for the app. For anything that moves you, it tells you the
    plan and waits for "yes".
 3. **The long-term planner picks the next point.**

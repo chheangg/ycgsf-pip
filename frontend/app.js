@@ -2261,7 +2261,8 @@ async function askPip({ body, text }) {
 async function askPipNow({ body, text }) {
   const url = `${SERVER}/talk?session=${SESSION}&ctx=${encodeURIComponent(JSON.stringify(status()))}` + (text ? `&text=${encodeURIComponent(text)}` : "");
   try {
-    const r = await (await fetch(url, { method: "POST", body: body || "", signal: AbortSignal.timeout(30000) })).json();
+    // Two Home Depot lookups can each take 60 s; leave another 60 s for transcription and the brain.
+    const r = await (await fetch(url, { method: "POST", body: body || "", signal: AbortSignal.timeout(180000) })).json();
     S.serverDown = 0;
     if (r.heard && answerLocally(r.heard)) { log("HEARD", r.heard, "-> answered on the phone"); return; }   // yes/no to a route preview, the FIND key
     if (r.ignored) { log("(not for Pip)", r.heard); return; }
