@@ -131,9 +131,10 @@ struct PipWebView: UIViewRepresentable {
                 req.source = MKMapItem(placemark: MKPlacemark(coordinate: CLLocationCoordinate2D(latitude: fLat, longitude: fLon)))
                 req.destination = MKMapItem(placemark: MKPlacemark(coordinate: CLLocationCoordinate2D(latitude: tLat, longitude: tLon)))
                 req.transportType = .walking
+                req.requestsAlternateRoutes = true   // a blocked path (gate, hedge) needs another way, not the same route again
                 MKDirections(request: req).calculate { resp, err in
                     var out: [String: Any] = ["error": err?.localizedDescription ?? "no walking route"]
-                    if let r = resp?.routes.first {
+                    let routes: [[String: Any]] = (resp?.routes ?? []).map { r in
                         let n = r.polyline.pointCount
                         var coords = [CLLocationCoordinate2D](repeating: kCLLocationCoordinate2DInvalid, count: n)
                         r.polyline.getCoordinates(&coords, range: NSRange(location: 0, length: n))
@@ -142,9 +143,10 @@ struct PipWebView: UIViewRepresentable {
                             let c = s.polyline.points()[0].coordinate
                             return ["text": s.instructions, "m": s.distance, "lat": c.latitude, "lon": c.longitude]
                         }
-                        out = ["meters": r.distance, "seconds": r.expectedTravelTime,
-                               "points": coords.map { [$0.latitude, $0.longitude] }, "steps": steps]
+                        return ["meters": r.distance, "seconds": r.expectedTravelTime,
+                                "points": coords.map { [$0.latitude, $0.longitude] }, "steps": steps]
                     }
+                    if var first = routes.first { first["routes"] = routes; out = first }
                     let json = (try? JSONSerialization.data(withJSONObject: out)).flatMap { String(data: $0, encoding: .utf8) } ?? "null"
                     DispatchQueue.main.async { self.js("window.pipNative && window.pipNative.pinned(\(id), \(json))") }
                 }

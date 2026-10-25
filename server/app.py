@@ -615,6 +615,10 @@ def run_tool(sess: dict, ctx: dict, name: str, args: dict) -> tuple[dict, dict |
             # Trip 15:33: mid-route, "we hit a back end" (Whisper for "dead end") became a search for a made-up place.
             return {"error": f"They're being guided to {going} and didn't name a new place. If they say it's blocked, "
                              "a dead end, or they're stuck, call blocked; otherwise just answer."}, None
+        if (args.get("category") == "named" and named and asked
+                and not any(w in asked for w in re.findall(r"[a-z']{3,}", named))):
+            # Trip 16:03: "find me Fro Coffee" -> a search for "Target", the place from earlier.
+            return {"error": f"They didn't say '{args.get('name')}'. Search for the place they just named, in their words."}, None
         if ctx.get("apple_search") and ctx.get("pos"):
             # The phone searches Apple Maps itself, picks the real place, gets its walking route and asks the user in
             # words built from that data. The brain doesn't route or describe it.
@@ -1135,24 +1139,33 @@ def decide_slam(req: SlamDecision):
     return {"choice": choice, "why": why, "say": say, "ms": round((time.time() - t0) * 1000)}
 
 
-PATH_PROMPT = ("You are the eyes of a blind pedestrian walking outdoors. This camera view is the way they face. Answer only "
-               "from what you SEE: is the ground straight ahead walkable for the next few meters (sidewalk, path, open "
-               "plaza), or blocked (wall, fence, building, hedge, steps down, parked car, construction)? Where does the "
-               "walkable path go from here? "
-               'JSON only: {"ahead": "walkable|blocked|unsure", "path": "ahead|left|right|none", "what": "what blocks it in 1-3 words, or none"}')
+# Asked neutrally, decided in code: on 19 photos from trip 15:30 the 7B said "walkable" / "could keep walking: true"
+# facing a concrete wall, but named what was in the middle correctly ("concrete wall", "building", "pillar").
+PATH_PROMPT = ('Describe this photo from the phone of a person walking. JSON only: {"middle": "the main thing in the middle of '
+               'the photo, 1-3 words", "fills": "how much of the photo it covers: little|half|most", "ground_ahead": "what the '
+               'ground in the lower middle is, 1-3 words", "open_side": "which side shows more open walkway: left|right|both|neither"}')
+BARRIER = re.compile(r"wall|building|pillar|column|gate|fence|railing|hedge|bush|shrub|door|glass|window|car|truck|van|stair|step|"
+                     r"barrier|bollard|planter|construction|chain|rope|cone", re.I)   # across the path: half the photo is enough
+OBSTACLE = re.compile(r"tree|pole|post|bench|person|people|sign|bike|bicycle|scooter|trash", re.I)   # only when it fills most of it
+GROUND = re.compile(r"path|walk|sidewalk|ground|floor|street|road|plaza|pavement|concrete$|grass", re.I)
 
 
 @app.post("/path_ahead")
 async def path_ahead(image: UploadFile = File(...)):
-    """Outdoors, every few seconds: where the walkable path is. GPS only knows the direction of the route, not walls."""
+    """Outdoors, every few seconds: is something across the way ahead, and which side is open. GPS only knows the
+    route's direction, not walls. -> {ahead: walkable|blocked_soon|blocked, path: left|right|none, what}"""
     raw = await image.read()
     try:
-        d = _json(await asyncio.to_thread(see, raw, PATH_PROMPT, 60))
+        d = _json(await asyncio.to_thread(see, raw, PATH_PROMPT, 70))
     except Exception as e:
         log.warning("path check failed: %r", e)
-        d = {"ahead": "unsure", "path": "none", "what": "none"}
-    log.info("path ahead: %s", d)
-    return d
+        return {"ahead": "unsure", "path": "none", "what": "none"}
+    mid, fills = str(d.get("middle", "")), str(d.get("fills", ""))
+    across = not GROUND.search(mid) and (BARRIER.search(mid) or (OBSTACLE.search(mid) and fills == "most"))
+    out = {"ahead": ("blocked" if fills == "most" else "blocked_soon") if across else "walkable",
+           "path": d.get("open_side") if d.get("open_side") in ("left", "right") else "none", "what": mid if across else "none"}
+    log.info("path ahead: %s <- %s", out, d)
+    return out
 
 
 IS_IT_PROMPT = ('Look at the object in the CENTER of this camera view. Is it really a {what}? People confuse doors with '

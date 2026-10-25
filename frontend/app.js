@@ -799,6 +799,38 @@ async function looksOutside() {   // one camera frame: is this outdoors (not a r
     return room === "outside" || (room === "unknown" && gpsGood(15));
   } catch (e) { log("outside check failed", e.message); return false; }
 }
+// ---------- blocked spots: a confirmed gate or hedge on the route, so a new route goes around it ----------
+// Trip 15:58: blocked at a gate, then Apple Maps' new route went the same way into another wall. A spot counts as
+// blocked only when LiDAR and the camera agree; routes passing within 20 m of one are skipped (GPS error here was
+// 5-14 m). Apple Maps gives alternate routes; if all pass it, try going via a point 60 m to either side of it.
+const AVOID_M = 20, VIA_M = 60, BLOCK_KEEP_MS = 30 * 60000;   // a shut gate stays shut for a while; forget after 30 min
+const liveBlocks = () => (S.blocks || []).filter((b) => Date.now() - b.t < BLOCK_KEEP_MS);
+function addBlock(what) {   // the spot just ahead of you (LiDAR saw it within ~2 m; GPS puts you within ~10 m)
+  if (!S.fix || compassNow() == null) return;
+  const b = { ...move(S.fix, compassNow(), 3), t: Date.now(), what };
+  (S.blocks ||= []).push(b);
+  log("blocked spot:", what, b.lat.toFixed(6), b.lon.toFixed(6));
+}
+function routeHitsBlock(points) {
+  const bs = liveBlocks(); if (!bs.length || points.length < 2) return false;
+  const o = { lat: points[0][0], lon: points[0][1] }, P = points.map(([lat, lon]) => toLocal(o, { lat, lon }));
+  return bs.some((b) => { const c = toLocal(o, b); return P.some((p, i) => i > 0 && segDist(c, P[i - 1], p) < AVOID_M); });
+}
+async function routeAvoiding(here, to) {   // -> {route, via, all}: the first Apple Maps route clear of blocked spots
+  const d = await askNative({ type: "directions", from: here, to }, 15000);
+  const routes = d?.routes || (d?.points ? [d] : []);
+  const clear = routes.find((r) => r.points?.length > 1 && !routeHitsBlock(r.points));
+  if (clear || !routes.length) return { route: clear || null, all: routes.length };
+  const b = liveBlocks().at(-1), toBlock = bearing(here, b);
+  for (const side of [-90, 90]) {   // around it: via a point beside the block, then on to the place
+    const v = move(b, (toBlock + side + 360) % 360, VIA_M);
+    const [a1, a2] = await Promise.all([askNative({ type: "directions", from: here, to: v }, 15000), askNative({ type: "directions", from: v, to }, 15000)]);
+    if (!(a1?.points?.length > 1 && a2?.points?.length > 1)) continue;
+    const points = [...a1.points, ...a2.points.slice(1)];
+    if (!routeHitsBlock(points)) return { route: { points, steps: [...(a1.steps || []), ...(a2.steps || [])], seconds: (a1.seconds || 0) + (a2.seconds || 0) }, via: true, all: routes.length };
+  }
+  return { route: null, all: routes.length };
+}
 // go: they already said yes (coming out of a building): start right away instead of asking again.
 async function gpsWalk(name, to, serverSteps, entrance = true, { go = false, placeId = null, where = "" } = {}) {   // where: ", on Library Walk"   // entrance: at the end, find the door with the camera
   ensureGPS(); ensureCamera();
@@ -817,11 +849,15 @@ async function gpsWalk(name, to, serverSteps, entrance = true, { go = false, pla
   const here = { lat: S.fix.lat, lon: S.fix.lon };
   let path = null, secs = null;
   if (NATIVE) {
-    const d = await askNative({ type: "directions", from: here, to }, 15000);
+    const { route: d, via, all } = await routeAvoiding(here, to);
     if (d?.points?.length > 1) {
       path = buildPath(d.points.map(([lat, lon]) => ({ lat, lon })), d.steps); secs = d.seconds;
-      log("apple maps route", name, Math.round(path.total), "m", d.points.length, "shape points,", path.man.length, "turns");
-    } else log("apple maps route failed", d?.error || "no answer");
+      log("apple maps route", name, Math.round(path.total), "m", d.points.length, "shape points,", path.man.length, "turns",
+          via ? "(around a blocked spot)" : all > 1 ? `(of ${all} routes)` : "");
+    } else if (all && liveBlocks().length) {
+      log("every route goes through a blocked spot");
+      return say("Every way I can find goes through the blocked spot. Is there a way through it, like a door in the gate? Or ask someone nearby.");
+    } else log("apple maps route failed", "no answer");
   }
   if (!path && serverSteps?.length) {   // fallback: the server's corner points, joined by straight lines
     const pts = [here, ...serverSteps.map((st) => ({ lat: st.lat, lon: st.lon }))];
@@ -956,10 +992,16 @@ async function aroundCheck(w, said = false) {
     log("blocked ahead:", dd.ahead.toFixed(1), "m", what || "(unnamed)", `left ${dd.left.toFixed(1)} right ${dd.right.toFixed(1)}`, `#${w.blocks}`,
         said ? "(user said)" : "", goal ? (pts?.length ? `way around: ${pts.length} points` : "no way around on the map") : "no map goal");
     if (S.walk !== w) return;
+    const sawIt = what || (w.lastPath && Date.now() - w.lastPath.t < 10000 && /blocked/.test(w.lastPath.ahead)) || (dd.left < 1.5 && dd.right < 1.5);
     if (pts?.length > 1) {
       w.detour = pts;
       const first = pts.find((q) => roomDist(N.pose, q) > 0.8) || pts[0], side = angleDiff(N.heading, roomBearing(N.pose, first)) < 0 ? "left" : "right";
       return say(`Stop. ${name}. I'll take you around it, to your ${side}. Follow the ticking.`, { urgent: true });
+    }
+    if (w.path && w.to && sawIt) {   // LiDAR and the camera agree it's blocked: a route around that spot, from here
+      addBlock(w.lastPath?.what && w.lastPath.what !== "none" ? w.lastPath.what : what || "wall");
+      say(`Stop. ${name}, and there's no way around it here. I'll find a different way.`, { urgent: true });
+      return rerouteWalk(w);
     }
     return walkBackShort(w, name);
   } catch (e) { log("around check failed", e.message); }
@@ -1016,6 +1058,22 @@ async function pathCheck(w) {
     const r = await (await fetch(SERVER + "/path_ahead", { method: "POST", body: fd, signal: AbortSignal.timeout(6000) })).json();
     if (S.walk !== w) return;
     log("path ahead:", r.ahead, "path", r.path, r.what && r.what !== "none" ? r.what : "");
+    const prev = w.lastPath;
+    w.lastPath = { ...r, t };
+    // Act only when two looks in a row agree (replaying trip 15:30, single looks flipped left/right at a building
+    // 50 m away; the real wall was flagged on every look from 13 s before it).
+    const agree = prev && t - prev.t < 3 * PATH_EVERY_MS && prev.ahead === r.ahead && prev.path === r.path;
+    if (r.ahead === "blocked" && !(N.depth && N.depth.ahead < 2)) r.ahead = "blocked_soon";   // fills the photo but LiDAR says it isn't close
+    if (!agree && r.ahead !== "blocked") return;
+    if (r.ahead === "blocked_soon") {   // across the path 3-15 m ahead: warn now, while there's room to choose
+      const named = r.what && r.what !== "none" ? r.what : "something";
+      if (r.path === "left" || r.path === "right") { w.bias = r.path === "left" ? -PATH_BIAS_DEG : PATH_BIAS_DEG; w.biasUntil = t + PATH_BIAS_MS; }
+      if (t - (w.soonSaidAt || 0) > PATH_BIAS_MS) {
+        w.soonSaidAt = t;
+        say(`Heads up, there's a ${named} across the path ahead.${r.path === "left" || r.path === "right" ? ` The way goes ${r.path}. Bear ${r.path}.` : " Slow down."}`);
+      }
+      return;
+    }
     if (r.ahead === "blocked" && (r.path === "left" || r.path === "right")) {
       w.bias = r.path === "left" ? -PATH_BIAS_DEG : PATH_BIAS_DEG; w.biasUntil = t + PATH_BIAS_MS;
       say(`The path goes ${r.path} here${r.what && r.what !== "none" ? `, there's a ${r.what} ahead` : ""}. Bear ${r.path}.`);
@@ -1228,6 +1286,11 @@ async function slamMap(m, why) {
     if (c.verdict === "back") return slamBacktrack(m, c.why);
     if (await hopCheck(m, why)) return;                              // through a door, or somewhere new: the brain picks the next step
   }
+  if (m.mapping) return;
+  m.mapping = true;
+  try { await slamSpin(m, why); } finally { m.mapping = false; }
+}
+async function slamSpin(m, why) {
   m.phase = "map"; m.phaseAt = Date.now(); render();
   say(m.decisions.length || S.trip?.hops ? "Let me map this spot. Turn slowly all the way around." : "I'll map the room first. Turn slowly all the way around.");
   let turned = 0, last = N.heading, readAt = -999, step = -1; const t0 = Date.now(), reads = [];
