@@ -689,6 +689,7 @@ function walkCue() {   // runs every screen frame; the phone's position updates 
   w.l = l;   // for the screen
   const around = N.pose ? blockedStep(w) : undefined; if (around !== undefined) return around;
   aroundCheck(w);
+  sideCheck(w);
   if (!l) {   // no room tracking / no GPS: no ticks
     w.lostSince ??= now;
     if (now - w.lostSince > (p.ar ? 3000 : 10000) && now - (w.lostAt || 0) > 10000) {
@@ -928,6 +929,8 @@ async function aroundCheck(w, said = false) {
   trailTick(w);
   const t = Date.now(), d = N.depth;
   if (w.backTo || w.detour || w.aroundBusy) return;
+  w.startedAt ??= t;
+  if (t - w.startedAt < 8000) return;   // trip 15:31: right out of a door, "go back 10 meters" sent the user back inside
   const blocked = d ? d.ahead < BLOCKED_M && (said || w.onCourse !== false) : said;
   if (!said) {
     if (!blocked) { w.blockedSince = null; return; }
@@ -966,7 +969,7 @@ function walkBackShort(w, why) {   // back ~10 m along your own path (not to the
   const tr = w.trail || [];
   let k = tr.length - 1, back = 0;
   while (k > 0 && back < BACK_M) { back += roomDist(tr[k], tr[k - 1]); k--; }
-  if (back < 2) { say(`Stop. ${why}. I'll find another way from here.`, { urgent: true }); return rerouteWalk(w); }
+  if (back < 5) { say(`Stop. ${why}. I'll find another way from here.`, { urgent: true }); return rerouteWalk(w); }   // under 5 m walked: nothing worth going back to
   w.backTo = tr[k]; w.trail = tr.slice(0, k + 1); w.blocks = 0;
   say(`Stop. ${why}, and there's no way around. Let's go back about ${Math.round(back)} meters, just the way you came, not to the start. Turn around, and follow the ticking.`, { urgent: true });
 }
@@ -987,6 +990,44 @@ function rerouteWalk(w) {   // a new route from where you are; a taught route ca
   S.walk = null; render();
   gpsWalk(w.name, w.to, null, Boolean(w.entrance), { go: true });
 }
+// Outdoors the route only knows a GPS direction (trip 15:32: following it straight into a corner). Every 5 s the vision
+// model looks the way you face: blocked -> the LiDAR/map check now; the path bends -> follow the camera for 8 s.
+const PATH_EVERY_MS = 3000, PATH_BIAS_DEG = 40, PATH_BIAS_MS = 8000;   // 40 deg: a clear "bear", not a full turn
+const SIDE_NEAR_M = 0.7, SIDE_FAR_M = 1.5, SIDE_BIAS_DEG = 20, SIDE_SAY_MS = 6000;   // 0.7 m: within arm's reach of a wall or hedge
+// LiDAR every frame, on straight stretches too: something close on one side and room on the other -> lean away from it.
+function sideCheck(w) {
+  const d = N.depth, t = Date.now();
+  if (!d || w.phase !== "go" || d.ahead < BLOCKED_M) return;
+  const side = d.left < SIDE_NEAR_M && d.right > SIDE_FAR_M ? "right" : d.right < SIDE_NEAR_M && d.left > SIDE_FAR_M ? "left" : null;
+  if (!side) return;
+  if (!(w.bias && t < w.biasUntil)) { w.bias = side === "right" ? SIDE_BIAS_DEG : -SIDE_BIAS_DEG; w.biasUntil = t + 2000; }
+  if (t - (w.sideSaidAt || 0) > SIDE_SAY_MS) {
+    w.sideSaidAt = t;
+    log("side close:", side === "right" ? `left ${d.left.toFixed(1)} m` : `right ${d.right.toFixed(1)} m`);
+    say(`Bear ${side} a little.`);
+  }
+}
+async function pathCheck(w) {
+  const t = Date.now();
+  if (w.pathBusy || t - (w.pathAt || 0) < PATH_EVERY_MS || w.phase !== "go" || w.backTo || w.detour || !lastFrame) return;
+  w.pathAt = t; w.pathBusy = true;
+  try {
+    const fd = new FormData(); fd.append("image", lastFrame, "f.jpg");
+    const r = await (await fetch(SERVER + "/path_ahead", { method: "POST", body: fd, signal: AbortSignal.timeout(6000) })).json();
+    if (S.walk !== w) return;
+    log("path ahead:", r.ahead, "path", r.path, r.what && r.what !== "none" ? r.what : "");
+    if (r.ahead === "blocked" && (r.path === "left" || r.path === "right")) {
+      w.bias = r.path === "left" ? -PATH_BIAS_DEG : PATH_BIAS_DEG; w.biasUntil = t + PATH_BIAS_MS;
+      say(`The path goes ${r.path} here${r.what && r.what !== "none" ? `, there's a ${r.what} ahead` : ""}. Bear ${r.path}.`);
+    } else if (r.ahead === "blocked") aroundCheck(w, true);
+    else if ((r.path === "left" || r.path === "right") && r.what && r.what !== "none") {
+      // trip 15:32: 13 s before the wall the camera already said "path left, building ahead"; say it and follow it
+      w.bias = r.path === "left" ? -PATH_BIAS_DEG : PATH_BIAS_DEG; w.biasUntil = t + PATH_BIAS_MS;
+      if (t - (w.bendSaidAt || 0) > PATH_BIAS_MS) { w.bendSaidAt = t; say(`The path bends ${r.path}, there's a ${r.what} ahead. Bear ${r.path}.`); }
+    } else if (r.path === "left" || r.path === "right") { w.bias = r.path === "left" ? -PATH_BIAS_DEG / 2 : PATH_BIAS_DEG / 2; w.biasUntil = t + PATH_BIAS_MS; }
+  } catch (e) { log("path check failed", e.message); }
+  finally { w.pathBusy = false; }
+}
 function gpsCue() {
   const w = S.walk, now = Date.now();
   if (!gpsGood(30)) {
@@ -999,6 +1040,8 @@ function gpsCue() {
   const around = N.pose ? blockedStep(w) : undefined; if (around !== undefined) return around;
   aroundCheck(w);
   const g = gpsWhere(w);
+  pathCheck(w); sideCheck(w);
+  if (w.bias && now < w.biasUntil && compassNow() != null) g.off = angleDiff(compassNow(), g.want + w.bias);   // the camera's path over GPS
   w.i = w.m; w.s = g.s; w.e = g.e; w.g = g;
   if (w.total - g.s < Math.max(8, S.fix.acc)) {   // arrived
     S.walk = null; render(); tap("both", "got");
@@ -1189,10 +1232,15 @@ async function slamMap(m, why) {
   say(m.decisions.length || S.trip?.hops ? "Let me map this spot. Turn slowly all the way around." : "I'll map the room first. Turn slowly all the way around.");
   let turned = 0, last = N.heading, readAt = -999, step = -1; const t0 = Date.now(), reads = [];
   const ring = S.orient = { seen: 0, dirs: [], name: m.room, mission: true };   // the screen shows the 360 ring (08c)
+  const views = m.spinViews = []; m.nextViewAt = 0;
   await new Promise((r) => setTimeout(r, 1500));
   while (S.mission === m && Math.abs(turned) < 330 && Date.now() - t0 < 30000) {
     turned += ((N.heading - last + 540) % 360) - 180; last = N.heading;
     spun(ring); if (m.leave) leaveSample(m);
+    if (Math.abs(turned) >= (m.nextViewAt ?? 0) && views.length < 8) {   // the camera's turn to look: a photo each ~45 degrees
+      m.nextViewAt = (m.nextViewAt ?? 0) + 45; const h = N.heading;
+      frameBlob().then((b) => { if (b) views.push({ b, h }); });
+    }
     if (Math.floor(Math.abs(turned) / 30) > step) { step = Math.floor(Math.abs(turned) / 30); note(step); }   // every 30 degrees, the next note up
     if (Math.abs(turned) - readAt >= 30) { readAt = Math.abs(turned); reads.push(readSigns().then((sg) => S.mission === m && noteSigns(m, sg))); }   // signs every 30 degrees
     await new Promise((r) => setTimeout(r, 100));
@@ -1225,21 +1273,57 @@ async function slamCheckRoom(m) {
     else if (c.room && c.room !== "unknown") { if (m.place && m.place !== c.room) say(`You've left the ${m.place}. This is a ${c.room}.`); m.place = c.room; }
   } catch (e) { log("room check failed", e); }
 }
+// Who decides where to go: the camera first (the vision model looks at the photos from the spin and picks the way,
+// e.g. a doorway with daylight), the floor map makes it exact (a real door or opening that way, its distance, a path)
+// and handles going back; GPS direction only breaks ties when the camera can't tell.
+async function visionPick(m) {
+  const views = (m.spinViews || []).slice(0, 8); m.spinViews = null;
+  if (views.length < 3) return null;
+  const fd = new FormData(); views.forEach((v, i) => fd.append("images", v.b, `v${i}.jpg`));
+  const L = m.leave;
+  fd.append("goal", L ? `the way out of this room${L.room ? `, toward the ${L.room}` : ", toward the building's exit"}` : m.room);
+  fd.append("history", JSON.stringify(m.history.slice(-8)));
+  try {
+    const r = await (await fetch(SERVER + "/panorama", { method: "POST", body: fd, signal: AbortSignal.timeout(25000) })).json();
+    const p = r.plan || {};
+    log("vision pick:", p.target || p.search || "-", "view", p.view, p.backtrack ? "BACKTRACK" : "", "|", p.why || "", `${r.ms}ms`);
+    if (p.place && p.place !== "unknown") m.place = p.place;
+    const v = Number.isInteger(p.view) ? views[p.view] : null;
+    return { backtrack: Boolean(p.backtrack), what: String(p.target || p.search || "a way through"), why: p.why || "", heading: v ? v.h : null };
+  } catch (e) { log("vision pick failed", e.message); return null; }
+}
+function goCandidate(m, c, why, reason, words) {
+  m.decisions.push({ x: N.pose.x, z: N.pose.z });                  // a junction to come back to
+  if (m.leave) leaveMark(m, `${c.kind} ${c.distance_m} m ${c.direction}`);
+  m.history.push(`${why}: in ${m.place || "?"}; went for ${c.kind} ${c.distance_m} m ${c.direction} (${reason})`);
+  m.target = c; m.legSaid = null; say(words);
+  slamGo(m);
+}
 async function slamDecide(m, why) {
   m.phase = "decide"; render();
-  const cands = slamCandidates(m);
+  const cands = slamCandidates(m), seen = await visionPick(m);
+  if (S.mission !== m) return;
+  if (seen?.backtrack && m.decisions.length) return slamBacktrack(m, seen.why || "the camera sees no way on from here");
+  if (seen?.heading != null) {
+    const fresh = cands.filter((c) => !c.visited && Math.abs(angleDiff(seen.heading, roomBearing(N.pose, c))) < 35)
+                       .sort((a, b) => (a.kind !== "door") - (b.kind !== "door") || a.distance_m - b.distance_m);
+    const where = (c) => (c.direction === "ahead" ? "straight ahead" : c.direction === "behind" ? "behind you" : `on your ${c.direction}`);
+    if (fresh[0]) {
+      const c = fresh[0];
+      return goCandidate(m, c, why, `camera: ${seen.what}`, `I can see ${seen.what}, about ${Math.max(1, Math.round(c.distance_m))} meters ${where(c)}. Let's go there.`);
+    }
+    // the camera sees a way the map hasn't reached yet: head 3 m that way, then look again
+    const b = rad(seen.heading), to = { x: N.pose.x + Math.sin(b) * 3, z: N.pose.z - Math.cos(b) * 3 };
+    const c = { id: "seen", kind: "opening", x: to.x, z: to.z, distance_m: 3, direction: relDir(seen.heading) };
+    return goCandidate(m, c, why, `camera: ${seen.what}, past the map`, `I can see ${seen.what} ${where(c)}. Let's head that way.`);
+  }
   if (!cands.length) return slamBacktrack(m, "I can't see any way through from here");
   const send = cands.map(({ x, z, ...c }) => (m.leave ? { ...c, toward: towardWords(m, { x, z }) } : c));
   const r = await post("/decide_slam", { goal: m.room, candidates: send, memory: m.history.slice(-6), place: m.place || "unknown", leaving: Boolean(m.leave) });
   if (S.mission !== m) return;
   log("slam decide:", r.choice, r.why, JSON.stringify(send.map((c) => `${c.id} ${c.distance_m}m ${c.direction}${c.toward ? ` (${c.toward})` : ""}${c.visited ? " V" : ""}`)));
   if (r.choice === "backtrack") return slamBacktrack(m, r.why);
-  const c = cands.find((x) => x.id === r.choice);
-  m.decisions.push({ x: N.pose.x, z: N.pose.z });                  // a junction to come back to
-  if (m.leave) leaveMark(m, `${c.kind} ${c.distance_m} m ${c.direction}`);
-  m.history.push(`${why}: in ${m.place || "?"}; went for ${c.kind} ${c.distance_m} m ${c.direction} (${r.why})`);
-  m.target = c; say(r.say);
-  slamGo(m);
+  goCandidate(m, cands.find((x) => x.id === r.choice), why, r.why, r.say);
 }
 async function slamGo(m) {
   m.phase = "go"; m.phaseAt = Date.now(); m.path = null; render();
@@ -1252,9 +1336,21 @@ async function slamRepath(m) {
   if (!pts || !pts.length) { log("no path to", m.target.id); m.path = [{ x: m.target.x, z: m.target.z }]; return; }   // straight line
   m.path = pts;
 }
+// Say each leg, like a route: "Turn around, to 6 o'clock." -> buzz when you face it -> "Walk 3 meters, about 4 steps."
+// Trip 15:30: "There's a door about 3 meters behind you" and then only ticks; the user didn't know to turn around.
+function slamTalk(m, d) {
+  const nx = slamNext(m); if (!nx || N.heading == null) return;
+  const off = angleDiff(N.heading, roomBearing(N.pose, nx)), t = Date.now();
+  if (Math.abs(off) > ON_COURSE + 5) {
+    if (m.legSaid !== "turn" || t - (m.legAt || 0) > 6000) { m.legSaid = "turn"; m.legAt = t; mSay(turnWords(off), 0); }
+  } else if (Math.abs(off) < ON_COURSE && m.legSaid !== "walk") {
+    if (m.legSaid === "turn") turnDone();
+    m.legSaid = "walk"; m.legAt = t; mSay(`Walk ${stepsWords(Math.min(d, roomDist(N.pose, nx) + 0.5))}.`, 0);
+  } else if (m.legSaid === "walk" && t - (m.legAt || 0) > 8000 && d > 1.5) { m.legAt = t; mSay(`About ${Math.round(d)} meters to go.`, 7000); }
+}
 function slamNext(m) {   // next waypoint at least 0.5 m away
   if (!m.path) return null;
-  while (m.path.length > 1 && roomDist(N.pose, m.path[0]) < 0.5) m.path.shift();
+  while (m.path.length > 1 && roomDist(N.pose, m.path[0]) < 0.5) { m.path.shift(); m.legSaid = null; }
   return m.path[0];
 }
 function slamStep(m) {
@@ -1281,7 +1377,7 @@ function slamStep(m) {
       else slamMap(m, `reached an opening`);
       return;
     }
-    if (t - (m.distSaidAt || 0) > 7000 && d > 1.5) { m.distSaidAt = t; mSay(`About ${Math.round(d)} meters to go.`, 7000); }
+    slamTalk(m, d);
   }
   if (m.phase === "through" && m.doorPos && roomDist(N.pose, m.doorPos) > 1.5) { m.doorPos = null; slamMap(m, "walked through a door"); }
   if (m.phase === "through" && t - m.phaseAt > 15000) slamMap(m, "should be through the door");
@@ -1600,7 +1696,7 @@ async function obstacleCheck(m) {
   m.obstacleCheckAt = Date.now();
   if (N.depth) {                                       // LiDAR: real distances, no guessing
     const targetClose = m.pin && N.pose && roomDist(N.pose, m.pin) < 1.2;
-    if (N.depth.ahead < 0.7 && !targetClose) {
+    if (N.depth.ahead < 0.7 && !targetClose && !m.doorBusy) {   // trip 15:31: a second check raced the door check
       // Trip 15:04: ARKit missed the exit door, so it was an "opening"; LiDAR saw the closed door at 0.3 m and Pip said
       // "more room on your right", steering the user around the door they had to open. Ask the camera first.
       if (!m.doorAsked && !m.doorBusy) {
@@ -2151,6 +2247,7 @@ function status() {
            next_turn: S.route?.steps[S.stepIdx]?.turn || null, saved_spots: S.spots.map((s) => s.label),
            taught_routes: Object.keys(routesStore()), hazards: S.hazards.map((h) => `${h.label} ${h.side}`),
            learning: S.learning?.name || null, apple_search: NATIVE,
+           remaining_m: S.walk?.path && S.walk.s != null ? Math.round(S.walk.total - S.walk.s) : null,   // "how far is it now?"
            trip: S.trip ? { goal: S.trip.goal, place_id: S.trip.dest?.placeId || null, steps_done: S.trip.hops, now_in: S.trip.nowIn || null,
                             outside: S.trip.out, at_goal: Boolean(S.trip.atGoal), spaces_so_far: S.trip.rooms } : null };
 }

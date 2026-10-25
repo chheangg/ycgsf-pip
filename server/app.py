@@ -609,6 +609,12 @@ def run_tool(sess: dict, ctx: dict, name: str, args: dict) -> tuple[dict, dict |
         return {"error": "The user hasn't said they're outside, so they're indoors (home). Maps and GPS are off. "
                          "Use taught routes (list_saved_places / follow_saved_route) or the camera (find_object)."}, None
     if name == "find_places":
+        going, asked = ctx.get("navigating_to"), sess.get("heard", "").lower()
+        named = str(args.get("name") or args.get("category") or "").lower()
+        if going and not any(w in asked for w in re.findall(r"[a-z']{3,}", named)):
+            # Trip 15:33: mid-route, "we hit a back end" (Whisper for "dead end") became a search for a made-up place.
+            return {"error": f"They're being guided to {going} and didn't name a new place. If they say it's blocked, "
+                             "a dead end, or they're stuck, call blocked; otherwise just answer."}, None
         if ctx.get("apple_search") and ctx.get("pos"):
             # The phone searches Apple Maps itself, picks the real place, gets its walking route and asks the user in
             # words built from that data. The brain doesn't route or describe it.
@@ -693,8 +699,9 @@ def run_tool(sess: dict, ctx: dict, name: str, args: dict) -> tuple[dict, dict |
 def agent(session: str, heard: str, ctx: dict) -> dict:
     """One user turn: up to 5 tool calls, then a short spoken reply (+ an action for the app)."""
     sess = _sessions.setdefault(session, {"history": [], "places": {}, "routes": {}})
+    sess["heard"] = heard
     status = {k: ctx.get(k) for k in ("gps", "gps_accuracy_m", "heading", "navigating_to", "next_turn",
-                                      "saved_spots", "taught_routes", "hazards", "learning", "trip")}
+                                      "saved_spots", "taught_routes", "hazards", "learning", "trip", "remaining_m")}
     if ctx.get("always_on"):   # the mic hears everything: let the model skip speech that isn't for it
         heard_note = ("\nYou're always listening, so you also hear the user talking to other people, the TV, or "
                       "themselves. If this speech is clearly not meant for you, reply exactly IGNORE and call no tools. "
@@ -733,6 +740,15 @@ def agent(session: str, heard: str, ctx: dict) -> dict:
                 nudged = True; action = None   # e.g. where_am_i for "find me the Target at UCSD"
                 msgs += [{"role": "assistant", "content": say},
                          {"role": "user", "content": "(system) They named a place to go. Call find_places with category 'named' and that name now."}]
+                continue
+            if (not used and not nudged and ctx.get("navigating_to") and not heard.startswith("(app)")
+                    and not say.rstrip().endswith("?")):
+                # Trip 15:33: "we hit a dead end" mid-route -> "I'm looking for the nearest Target" and no tool.
+                nudged = True
+                msgs += [{"role": "assistant", "content": say},
+                         {"role": "user", "content": f"(system) They're being guided to {ctx['navigating_to']} right now. If they "
+                                                     "say it's blocked, a dead end, or they're stuck, call blocked. Otherwise "
+                                                     "answer in a few words, without starting a new search."}]
                 continue
             if report_open and not used and not nudged and not say.rstrip().endswith("?"):
                 nudged = True
@@ -1117,6 +1133,26 @@ def decide_slam(req: SlamDecision):
         say = f"There's {what} about {max(1, round(c.distance_m))} meters {where}. Let's go there."
     log.info("slam decide %s: %s (%s)", req.goal, choice, why)
     return {"choice": choice, "why": why, "say": say, "ms": round((time.time() - t0) * 1000)}
+
+
+PATH_PROMPT = ("You are the eyes of a blind pedestrian walking outdoors. This camera view is the way they face. Answer only "
+               "from what you SEE: is the ground straight ahead walkable for the next few meters (sidewalk, path, open "
+               "plaza), or blocked (wall, fence, building, hedge, steps down, parked car, construction)? Where does the "
+               "walkable path go from here? "
+               'JSON only: {"ahead": "walkable|blocked|unsure", "path": "ahead|left|right|none", "what": "what blocks it in 1-3 words, or none"}')
+
+
+@app.post("/path_ahead")
+async def path_ahead(image: UploadFile = File(...)):
+    """Outdoors, every few seconds: where the walkable path is. GPS only knows the direction of the route, not walls."""
+    raw = await image.read()
+    try:
+        d = _json(await asyncio.to_thread(see, raw, PATH_PROMPT, 60))
+    except Exception as e:
+        log.warning("path check failed: %r", e)
+        d = {"ahead": "unsure", "path": "none", "what": "none"}
+    log.info("path ahead: %s", d)
+    return d
 
 
 IS_IT_PROMPT = ('Look at the object in the CENTER of this camera view. Is it really a {what}? People confuse doors with '
