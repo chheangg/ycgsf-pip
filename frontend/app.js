@@ -43,21 +43,24 @@ let ac;
 const invert = () => $("invert").value === "1";
 function tap(side, kind = "tap") {
   if (!ac) return;
-  const t = ac.currentTime, osc = ac.createOscillator(), g = ac.createGain(), pan = ac.createStereoPanner();
-  const p = side === "left" ? -1 : side === "right" ? 1 : 0;
-  pan.pan.value = invert() ? -p : p;   // headphones upside down: the "R" cup sits on the left ear
+  const t = ac.currentTime, osc = ac.createOscillator(), g = ac.createGain(), out = ac.createChannelMerger(2);
+  // Hard-route to ONE channel (not panning). Headphones upside down: the "R" cup sits on the left ear.
+  const ear = side === "both" ? null : (side === "left") !== invert() ? 0 : 1;   // 0 = left channel, 1 = right
   const [f, dur, vol] = kind === "warn" ? [520, 0.06, 0.55] : kind === "stop" ? [200, 0.09, 0.7]
     : kind === "up" ? [2600, 0.03, 0.45] : kind === "down" ? [700, 0.04, 0.55] : kind === "got" ? [1320, 0.12, 0.5] : [1800, 0.022, 0.45];
   osc.type = kind === "tap" ? "sine" : "triangle";
   osc.frequency.value = f;
   g.gain.setValueAtTime(vol, t);
   g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-  osc.connect(g).connect(pan).connect(ac.destination);
+  osc.connect(g);
+  if (ear === null) { g.connect(out, 0, 0); g.connect(out, 0, 1); } else g.connect(out, 0, ear);
+  out.connect(ac.destination);
   osc.start(t); osc.stop(t + dur + 0.02);
 }
 // What the taps should be doing right now: {side, interval (s), kind} or null for silence.
 function cue() {
   if (S.paused) return null;
+  if (!guiding() && !S.find) S.hint = "clear";
   if (S.find) return findCue();
   if (S.hint === "stop") return { side: "both", interval: 0.25, kind: "stop" };
   if (S.hint === "veer_left") return { side: "left", interval: 0.22, kind: "warn" };
@@ -102,6 +105,8 @@ function onFix(p, acc, real = true) {
   if (S.seg && S.heading != null && S.seg.heading == null) S.seg.heading = S.heading;
   render(); followRoute();
 }
+let gpsOn = false;
+function ensureGPS() { if (!gpsOn) { gpsOn = true; startGPS(); } }   // only when the conversation needs it
 function startGPS() {
   if (!navigator.geolocation) return log("no geolocation");
   navigator.geolocation.watchPosition(
@@ -155,10 +160,12 @@ function followRoute() {
   render();
 }
 function startRoute(r) {
+  ensureGPS(); ensureCamera();
   S.route = r; S.stepIdx = 1; S.spokenFor = {}; S.back = null; S.find = null;
   log("route", r.name, r.total_m + "m", r.steps.length, "steps", r.google_maps || ""); render();
 }
 async function planTo(body) {
+  ensureGPS();
   if (!S.pos) return say("I don't know where you are yet. Waiting for GPS.");
   say("Planning the route.");
   try {
@@ -171,7 +178,7 @@ async function planTo(body) {
 }
 
 // ---------- backtrack: GPS -> plan back; no GPS -> reverse the remembered trail ----------
-async function goBack(label) {
+async function goBack(label) {   // uses GPS only if it's already on; otherwise the remembered path
   const spot = label ? S.spots.find((s) => s.label.toLowerCase().includes(label.toLowerCase())) : S.spots.at(-1);
   if (S.gpsOk && (spot?.pos || S.crumbs[0])) return planTo({ to: spot?.pos || S.crumbs[0] });
   endSegment(null);
@@ -205,6 +212,7 @@ function backCue() {
 
 // ---------- teach a route (indoors too): walk it once, Pip replays it later ----------
 function learnStart(name, start) {
+  ensureCamera();
   endSegment(null);
   S.learning = { name, start: start || "here", trailIdx: S.trail.length };
   say(`Recording the way to ${name}. Walk there, and use the arrow keys when you turn. Say "we're here" when you arrive.`, { interrupt: false });
@@ -219,6 +227,7 @@ function learnEnd() {
   S.learning = null;
 }
 function replay(name) {
+  ensureCamera();
   const all = routesStore(), key = Object.keys(all).find((k) => k.toLowerCase().includes(name.toLowerCase()) || name.toLowerCase().includes(k.toLowerCase()));
   if (!key) return say(`I don't have a route called ${name} yet.`);
   const steps = [];
@@ -235,6 +244,7 @@ function replay(name) {
 // ---------- FIND IT: "left left", "up up" to guide a hand to an object ----------
 function findStart(target, quiet = false) {
   if (!target) return say("What should I find?");
+  ensureCamera();
   S.find = { target, move: null, size: 0, saidAt: 0, lastSay: "", seenAt: 0, gotAt: 0, started: Date.now() };
   if (!quiet) say(`Looking for the ${target}. Move the camera slowly.`);
 }
@@ -264,7 +274,13 @@ async function findStep(blob) {
 }
 
 // ---------- camera -> local planner (obstacles) ----------
-let video, canvas, busy = false, lastFrame = null, hazardSaidAt = 0;
+let video, canvas, busy = false, lastFrame = null, hazardSaidAt = 0, camOn = null;
+// Camera only when asked: find something, describe, or active guidance. Not while just talking.
+function ensureCamera() {
+  if (!camOn) camOn = startCamera().then(() => localLoop()).catch((e) => { log("camera:", e.message); camOn = null; });
+  return camOn;
+}
+const guiding = () => Boolean(S.route || S.back || S.learning);
 async function startCamera(deviceId) {
   // Widest view the camera offers: full HD, minimum zoom (many laptop/USB cams default to a cropped 640x480).
   const base = { width: { ideal: 1920 }, height: { ideal: 1080 }, ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: "environment" }) };
@@ -286,7 +302,7 @@ async function frameBlob() {
   return new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.7));
 }
 async function localLoop() {
-  if (!busy && !S.paused) {
+  if (!busy && !S.paused && (S.find || guiding())) {
     const blob = await frameBlob();
     if (blob && S.find) {
       busy = true; lastFrame = blob;
@@ -297,10 +313,10 @@ async function localLoop() {
       const fd = new FormData(); fd.append("image", blob, "f.jpg");
       try {
         const r = await (await fetch(SERVER + "/local", { method: "POST", body: fd })).json();
-        S.clear = r.clear; S.hint = r.hint; S.hazards = r.hazards;
+        S.clear = r.clear; S.hint = guiding() ? r.hint : "clear"; S.hazards = r.hazards;
         if (S.seg) S.seg.landmarks.push(...r.landmarks);
         const near = r.hazards.find((h) => h.near && h.side === "ahead");
-        if (near && Date.now() - hazardSaidAt > 6000) { hazardSaidAt = Date.now(); say(`${near.label} ahead.`, { interrupt: false }); }
+        if (near && guiding() && Date.now() - hazardSaidAt > 6000) { hazardSaidAt = Date.now(); say(`${near.label} ahead.`, { interrupt: false }); }
         $("clear").textContent = `${r.hint.replace("_", " ")} · ${r.ms} ms`;
         $("clear").className = "v " + (r.hint === "clear" ? "ok" : r.hint === "stop" ? "bad" : "warn");
       } catch (e) { $("clear").textContent = "no model"; S.hint = "clear"; }
@@ -311,13 +327,27 @@ async function localLoop() {
 }
 
 // ---------- talk: hold Space, 16 kHz PCM to the 4090 ----------
-let mic, micNode, chunks = [], talking = false;
+let mic, micNode, micStream, chunks = [], talking = false, builtinMic;
+// Opening a Bluetooth headset's mic switches it to mono "headset mode" (left = right). So: use the
+// laptop's built-in mic, and only while Space is held.
+async function pickBuiltinMic() {
+  const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput");
+  builtinMic = devs.find((d) => /built-in|macbook|internal/i.test(d.label))?.deviceId;
+  log("mic:", devs.find((d) => d.deviceId === builtinMic)?.label || "default (built-in not found)");
+}
 async function startMic() {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-  mic = ac.createMediaStreamSource(stream);
+  micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true,
+                                                                   ...(builtinMic ? { deviceId: { exact: builtinMic } } : {}) } });
+  if (!builtinMic) { await pickBuiltinMic(); if (builtinMic) { micStream.getTracks().forEach((t) => t.stop()); return startMic(); } }
+  mic = ac.createMediaStreamSource(micStream);
   micNode = ac.createScriptProcessor(4096, 1, 1);
   micNode.onaudioprocess = (e) => { if (talking) chunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
   mic.connect(micNode); micNode.connect(ac.destination);
+}
+function stopMic() {
+  micStream?.getTracks().forEach((t) => t.stop());
+  try { mic?.disconnect(); micNode?.disconnect(); } catch {}
+  micStream = mic = micNode = null;
 }
 function to16k(parts, rate) {
   const all = new Float32Array(parts.reduce((n, p) => n + p.length, 0));
@@ -332,7 +362,8 @@ async function sendTalk() {
   return askPip({ body: pcm.buffer });
 }
 function status() {
-  return { pos: S.pos, heading: S.heading == null ? null : Math.round(S.heading), gps: S.sim ? "simulated" : S.gpsOk ? "ok" : "weak",
+  return { pos: S.pos, heading: S.heading == null ? null : Math.round(S.heading),
+           gps: S.sim ? "simulated" : !gpsOn ? "off (not requested)" : S.gpsOk ? "ok" : "weak",
            gps_accuracy_m: S.acc == null ? null : Math.round(S.acc), navigating_to: S.route?.name || null,
            next_turn: S.route?.steps[S.stepIdx]?.turn || null, saved_spots: S.spots.map((s) => s.label),
            taught_routes: Object.keys(routesStore()), hazards: S.hazards.map((h) => `${h.label} ${h.side}`),
@@ -367,6 +398,7 @@ async function act(r) {
   }
 }
 async function describe(question = "What's around me?", interrupt = true) {
+  await ensureCamera(); await new Promise((r) => setTimeout(r, 600));   // first frame
   const blob = lastFrame || (await frameBlob());
   if (!blob) return say("The camera isn't on.");
   const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("question", question);
@@ -374,6 +406,7 @@ async function describe(question = "What's around me?", interrupt = true) {
   catch { say("I can't reach the vision model right now."); }
 }
 async function whereAmI() {
+  ensureGPS();
   if (!S.pos) return say("I don't have a GPS fix yet.");
   try {
     const r = await (await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&zoom=18&lat=${S.pos.lat}&lon=${S.pos.lon}`)).json();
@@ -411,16 +444,15 @@ async function start() {
   if (started) return; started = true;
   ac = new AudioContext();
   $("start").remove();
-  say("Hi, I'm Pip. Hold space to talk to me. Press T to test the taps.");
+  say("Hi, I'm Pip. Hold space to talk to me. Press T to test the taps. Camera and GPS are off until you need them.");
   checkServer(); setInterval(checkServer, 15000);
   fetch(SERVER + "/warmup", { method: "POST" }).then(() => checkServer()).catch(() => {});
-  startGPS(); startSegment();
+  startSegment();   // GPS and camera stay off until the conversation needs them
   if (qs.get("lat") && qs.get("lon")) {   // desk demo: start here and walk with W/A/F
     S.sim = true; onFix({ lat: +qs.get("lat"), lon: +qs.get("lon") }, 5, false);
     say("Simulated start position set. Use W to walk, A and F to turn.", { interrupt: false });
   }
-  try { await startCamera(); localLoop(); } catch (e) { log("camera:", e.message); }
-  try { await startMic(); } catch (e) { log("mic:", e.message); }
+  try { await startMic(); stopMic(); } catch (e) { log("mic:", e.message); }   // ask permission once, then release
   audioLoop();
 }
 $("start").onclick = start;
@@ -429,7 +461,8 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Enter") return start();
   if (!started || e.repeat || e.target.tagName === "INPUT") return;
   const k = e.key.toLowerCase();
-  if (e.code === "Space") { e.preventDefault(); talking = true; chunks = []; tap("both"); $("say").textContent = "Listening…"; }
+  if (e.code === "Space") { e.preventDefault(); chunks = []; $("say").textContent = "Listening…";
+                            startMic().then(() => { talking = true; tap("both"); }).catch((x) => log("mic:", x.message)); }
   else if (k === "d") describe();
   else if (k === "l") { const t = prompt("What should Pip find? (e.g. door knob)"); if (t) findStart(t); }
   else if (e.key === "Escape") findStop("Stopped looking.");
@@ -451,4 +484,8 @@ document.addEventListener("keydown", (e) => {
     render(); followRoute();
   }
 });
-document.addEventListener("keyup", (e) => { if (e.code === "Space" && talking) { talking = false; tap("both"); $("say").textContent = "Thinking…"; sendTalk(); } });
+document.addEventListener("keyup", (e) => {
+  if (e.code !== "Space") return;
+  const was = talking; talking = false; stopMic();
+  if (was) { tap("both"); $("say").textContent = "Thinking…"; sendTalk(); }
+});
