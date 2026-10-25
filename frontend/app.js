@@ -32,6 +32,7 @@ const S = {
   route: null, stepIdx: 1, spokenFor: {}, paused: false, dest: null,
   clear: null, hint: "clear", hazards: [], lastSpoken: "",
   trail: [], seg: null, spots: [], crumbs: [], back: null,
+  find: null,   // {target, move, size, saidAt, lastSay, seenAt, gotAt}
 };
 
 // ---------- 1. AUDIO: tip-tap with swapped channels ----------
@@ -42,7 +43,8 @@ function tap(side, kind = "tap") {
   const t = ac.currentTime, osc = ac.createOscillator(), g = ac.createGain(), pan = ac.createStereoPanner();
   const p = side === "left" ? -1 : side === "right" ? 1 : 0;
   pan.pan.value = invert() ? -p : p;   // headphones upside down: the "R" cup sits on the left ear
-  const [f, dur, vol] = kind === "warn" ? [520, 0.06, 0.55] : kind === "stop" ? [200, 0.09, 0.7] : [1800, 0.022, 0.45];
+  const [f, dur, vol] = kind === "warn" ? [520, 0.06, 0.55] : kind === "stop" ? [200, 0.09, 0.7]
+    : kind === "up" ? [2600, 0.03, 0.45] : kind === "down" ? [700, 0.04, 0.55] : kind === "got" ? [1320, 0.12, 0.5] : [1800, 0.022, 0.45];
   osc.type = kind === "tap" ? "sine" : "triangle";
   osc.frequency.value = f;
   g.gain.setValueAtTime(vol, t);
@@ -53,6 +55,7 @@ function tap(side, kind = "tap") {
 // What the taps should be doing right now: {side, interval (s), kind} or null for silence.
 function cue() {
   if (S.paused) return null;
+  if (S.find) return findCue();
   if (S.hint === "stop") return { side: "both", interval: 0.25, kind: "stop" };
   if (S.hint === "veer_left") return { side: "left", interval: 0.22, kind: "warn" };
   if (S.hint === "veer_right") return { side: "right", interval: 0.22, kind: "warn" };
@@ -193,6 +196,37 @@ function backCue() {
   return null;
 }
 
+// ---------- FIND IT: "left left", "up up" to guide a hand to an object ----------
+function findStart(target) {
+  if (!target) return say("What should I find?");
+  S.find = { target, move: null, size: 0, saidAt: 0, lastSay: "", seenAt: 0, gotAt: 0, started: Date.now() };
+  say(`Looking for the ${target}. Move the camera slowly.`);
+}
+function findStop(msg) { if (S.find) { S.find = null; if (msg) say(msg); } }
+function findCue() {
+  const f = S.find;
+  if (Date.now() - f.started > 90000) { findStop("I couldn't find it. Try again from a different spot."); return null; }
+  if (!f.move || Date.now() - f.seenAt > 1500) return null;                     // not seen right now: quiet
+  const near = Math.min(1, f.size * 8);                                         // bigger in frame = closer
+  if (f.move === "center") return { side: "both", interval: 0.5 - 0.3 * near, kind: "got" };
+  const side = f.move === "left" || f.move === "right" ? f.move : "both";
+  const kind = f.move === "up" ? "up" : f.move === "down" ? "down" : "tap";
+  return { side, interval: 0.45 - 0.25 * near, kind };
+}
+async function findStep(blob) {
+  const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("target", S.find.target);
+  const r = await (await fetch(SERVER + "/locate", { method: "POST", body: fd })).json();
+  const f = S.find; if (!f) return;
+  $("clear").textContent = r.found ? `${r.move} · ${Math.round(r.score * 100)}% · ${r.ms} ms` : `looking · ${r.ms} ms`;
+  $("clear").className = "v " + (r.found ? (r.move === "center" ? "ok" : "warn") : "");
+  if (!r.found) return;
+  f.move = r.move; f.size = r.size; f.seenAt = Date.now();
+  // Speak the short cue when it changes, or every 1.5 s while it holds.
+  if (r.say && (r.say !== f.lastSay || Date.now() - f.saidAt > 1500)) { say(r.say); f.lastSay = r.say; f.saidAt = Date.now(); }
+  if (r.move === "center" && r.size > 0.12) { if (!f.gotAt) f.gotAt = Date.now(); else if (Date.now() - f.gotAt > 1500) findStop(`The ${f.target} is right in front of you. Reach forward.`); }
+  else f.gotAt = 0;
+}
+
 // ---------- camera -> local planner (obstacles) ----------
 let video, canvas, busy = false, lastFrame = null, hazardSaidAt = 0;
 async function startCamera(deviceId) {
@@ -213,7 +247,11 @@ async function frameBlob() {
 async function localLoop() {
   if (!busy && !S.paused) {
     const blob = await frameBlob();
-    if (blob) {
+    if (blob && S.find) {
+      busy = true; lastFrame = blob;
+      try { await findStep(blob); } catch (e) { $("clear").textContent = "no model"; }
+      busy = false;
+    } else if (blob) {
       busy = true; lastFrame = blob;
       const fd = new FormData(); fd.append("image", blob, "f.jpg");
       try {
@@ -261,11 +299,12 @@ async function sendTalk() {
 async function act(r) {
   switch (r.intent) {
     case "navigate": return r.destination ? planTo({ destination: r.destination }) : say(r.say || "Where would you like to go?");
+    case "locate": return findStart(r.label || r.destination);
     case "backtrack": return goBack(r.label);
     case "describe": return describe(r.heard);
     case "where_am_i": return whereAmI();
     case "repeat": return say(S.lastSpoken);
-    case "stop": S.paused = true; return say("Paused. Say resume when you're ready.");
+    case "stop": if (S.find) return findStop("Stopped looking."); S.paused = true; return say("Paused. Say resume when you're ready.");
     case "resume": S.paused = false; return say("Resuming.");
     case "save_spot": return saveSpot(r.label || "this spot");
     default: return say(r.say);
@@ -335,6 +374,8 @@ document.addEventListener("keydown", (e) => {
   const k = e.key.toLowerCase();
   if (e.code === "Space") { e.preventDefault(); talking = true; chunks = []; tap("both"); $("say").textContent = "Listening…"; }
   else if (k === "d") describe();
+  else if (k === "l") { const t = prompt("What should Pip find? (e.g. door knob)"); if (t) findStart(t); }
+  else if (e.key === "Escape") findStop("Stopped looking.");
   else if (k === "b") goBack();
   else if (k === "s") saveSpot(`spot ${S.spots.length + 1}`);
   else if (k === "r") say(S.lastSpoken);
