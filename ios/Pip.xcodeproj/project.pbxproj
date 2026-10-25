@@ -13,6 +13,7 @@
 		71A9B4012B07C296D21E0DE2 /* Sensors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E5DC748729ED31260C0C881 /* Sensors.swift */; };
 		9E36290CC072D3E559D73283 /* PipWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB352097BF14FC0C13FD2D76 /* PipWebView.swift */; };
 		B1FB3AEE818EE3F75ECE556D /* SlamMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1901CE7DECD071FA8FF0A063 /* SlamMap.swift */; };
+		C3AD6B18704060DD0BB5B88E /* Voice.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEE1693222459511FEC618DF /* Voice.swift */; };
 		D04D77AB224FF20EF3BC55E8 /* frontend in Resources */ = {isa = PBXBuildFile; fileRef = 720246A4287D33D7CB280CDE /* frontend */; };
 		F12AC71A094C73EBCB1E96D8 /* ARSense.swift in Sources */ = {isa = PBXBuildFile; fileRef = 445951235A82C3B51A198F5E /* ARSense.swift */; };
 /* End PBXBuildFile section */
@@ -26,6 +27,7 @@
 		720246A4287D33D7CB280CDE /* frontend */ = {isa = PBXFileReference; lastKnownFileType = folder; name = frontend; path = ../frontend; sourceTree = SOURCE_ROOT; };
 		8BFFD412DEB58240C4004B9B /* Camera.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Camera.swift; sourceTree = "<group>"; };
 		8E5DC748729ED31260C0C881 /* Sensors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sensors.swift; sourceTree = "<group>"; };
+		BEE1693222459511FEC618DF /* Voice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Voice.swift; sourceTree = "<group>"; };
 		C86C408FF845EE060E865DEC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		FB352097BF14FC0C13FD2D76 /* PipWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PipWebView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -42,6 +44,7 @@
 				FB352097BF14FC0C13FD2D76 /* PipWebView.swift */,
 				8E5DC748729ED31260C0C881 /* Sensors.swift */,
 				1901CE7DECD071FA8FF0A063 /* SlamMap.swift */,
+				BEE1693222459511FEC618DF /* Voice.swift */,
 			);
 			path = Pip;
 			sourceTree = "<group>";
@@ -141,6 +144,7 @@
 				9E36290CC072D3E559D73283 /* PipWebView.swift in Sources */,
 				71A9B4012B07C296D21E0DE2 /* Sensors.swift in Sources */,
 				B1FB3AEE818EE3F75ECE556D /* SlamMap.swift in Sources */,
+				C3AD6B18704060DD0BB5B88E /* Voice.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

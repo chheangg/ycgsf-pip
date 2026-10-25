@@ -43,6 +43,9 @@ struct PipWebView: UIViewRepresentable {
             sensors.mic.onPhrase = { [weak self] pcm in
                 self?.js("window.pipNative && window.pipNative.phrase('\(pcm.base64EncodedString())')")
             }
+            sensors.voice.onSpoken = { [weak self] id in
+                self?.js("window.pipNative && window.pipNative.spoke(\(id))")
+            }
         }
 
         func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -81,7 +84,15 @@ struct PipWebView: UIViewRepresentable {
             case "gps":
                 sensors.startGPS()
             case "speaking":
-                sensors.mic.paused = body["on"] as? Bool ?? false
+                break                                   // native voice pauses the mic itself
+            case "tap":
+                sensors.voice.tap(side: body["side"] as? String ?? "both", kind: body["kind"] as? String ?? "tap",
+                                  inverted: body["inverted"] as? Bool ?? true)
+            case "say":
+                sensors.voice.say(body["text"] as? String ?? "", id: body["id"] as? Int ?? 0,
+                                  server: body["server"] as? String ?? "http://100.71.218.127:8100")
+            case "stopSay":
+                sensors.voice.stop(notify: true)
             default: break
             }
         }

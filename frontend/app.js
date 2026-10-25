@@ -12,7 +12,7 @@ const SESSION = Math.random().toString(36).slice(2);
 // Running inside the iPhone app: sensors come from the phone (0.5x / ARKit camera, LiDAR, gyro, steps, GPS, mic).
 const NATIVE = Boolean(window.PIP_NATIVE && window.webkit?.messageHandlers?.pip);
 const toNative = (m) => NATIVE && window.webkit.messageHandlers.pip.postMessage(m);
-const nativeWaits = new Map(); let nativeId = 0;
+const nativeWaits = new Map(), nativeSpeech = new Map(); let nativeId = 0;
 const askNative = (msg) => new Promise((res) => { const id = ++nativeId; nativeWaits.set(id, res); toNative({ ...msg, id });
                                                   setTimeout(() => { if (nativeWaits.delete(id)) res(null); }, 1500); });
 const N = { heading: null, pose: null, depth: null, distance: 0, camera: "", doors: [], frontiers: [], mapped: 0 };   // phone sensors
@@ -26,6 +26,7 @@ window.pipNative = {
   },
   frame(id, b64) { const r = nativeWaits.get(id); nativeWaits.delete(id); r?.(b64 || null); },
   pinned(id, p) { const r = nativeWaits.get(id); nativeWaits.delete(id); r?.(p); },
+  spoke(id) { const r = nativeSpeech.get(id); nativeSpeech.delete(id); r?.(); },
   phrase(b64) {
     if (!started) return;
     const bin = atob(b64), buf = new Uint8Array(bin.length);
@@ -71,6 +72,7 @@ const S = {
 let ac;
 const invert = () => $("invert").value === "1";
 function tap(side, kind = "tap") {
+  if (NATIVE) return toNative({ type: "tap", side, kind, inverted: invert() });   // native audio keeps the mic alive
   if (!ac) return;
   const t = ac.currentTime, osc = ac.createOscillator(), g = ac.createGain(), out = ac.createChannelMerger(2);
   // Hard-route to ONE channel (not panning). Headphones upside down: the "R" cup sits on the left ear.
@@ -116,7 +118,7 @@ const speaking = () => voiceBusy || performance.now() < speakingUntil || speechS
 function say(text, { urgent = false } = {}) {
   if (!text) return;
   S.lastSpoken = text; $("say").textContent = text; log("SAY", text);
-  if (urgent) { voiceGen++; try { voiceSrc?.stop(); } catch {} speechSynthesis.cancel(); pendingLine = null; voiceBusy = false; }
+  if (urgent) { voiceGen++; try { voiceSrc?.stop(); } catch {} speechSynthesis.cancel(); toNative({ type: "stopSay" }); pendingLine = null; voiceBusy = false; }
   if (voiceBusy) { pendingLine = text; return; }
   playLine(text);
 }
@@ -128,6 +130,11 @@ async function playLine(text) {
   if (pendingLine) { const next = pendingLine; pendingLine = null; playLine(next); }
 }
 async function speakNow(text, gen = voiceGen) {
+  if (NATIVE) {                                   // the app plays Pip's voice natively and tells us when it's done
+    const id = ++nativeId;
+    await new Promise((res) => { nativeSpeech.set(id, res); toNative({ type: "say", text, id, server: SERVER }); setTimeout(res, 30000); });
+    return;
+  }
   if (ac.state !== "running") await ac.resume();   // Chrome pauses idle audio
   // Sentence by sentence: the first one plays fast; long replies don't time out.
   const parts = text.match(/[^.!?]+[.!?]*/g)?.map((x) => x.trim()).filter(Boolean) || [text];
@@ -1060,7 +1067,7 @@ async function checkServer() {
 let started = false;
 async function start() {
   if (started) return; started = true;
-  ac = new AudioContext();
+  if (!NATIVE) ac = new AudioContext();         // in the app, all sound is native
   $("start").remove();
   say(listenMode === "always" ? "Hi, I'm Pip. I'm listening, just talk to me." : listenMode === "wake" ? "Hi, I'm Pip. Say Hey Pip when you need me." : "Hi, I'm Pip. Hold space to talk.");
   checkServer(); setInterval(checkServer, 15000);

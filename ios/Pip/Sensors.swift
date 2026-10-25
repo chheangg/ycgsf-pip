@@ -15,6 +15,7 @@ final class Sensors: NSObject, ObservableObject, CLLocationManagerDelegate {
     let ar = ARSense()
     let useAR = ARSense.supported          // LiDAR iPhones: ARKit (knows position in the room); others: 0.5x camera
     let mic = Mic()
+    let voice: Voice
     private let motion = CMMotionManager()
     private let pedometer = CMPedometer()
     private let location = CLLocationManager()
@@ -24,7 +25,10 @@ final class Sensors: NSObject, ObservableObject, CLLocationManagerDelegate {
     private var mapTick = 0
 
     override init() {
+        Mic.configureAudioSession()        // before anything plays: record + stereo Bluetooth output
+        voice = Voice()
         super.init()
+        voice.onSpeaking = { [weak self] on in self?.mic.paused = on }
         location.delegate = self
         location.desiredAccuracy = kCLLocationAccuracyBest
         if useAR {
