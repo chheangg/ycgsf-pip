@@ -36,7 +36,7 @@ Shared components: Status Bar, Key, Talk, Talk · On, Deafen, Deafen · On, Voic
 
 ## Testing: Mac or phone
 
-- **On the Mac (test it yourself):** anything that doesn't need someone walking around. That covers screens, animations and layout (iOS Simulator or a browser), the design check, builds, speech and taps, server replies, and reading logs and trip recordings.
+- **On the Mac (test it yourself):** anything that doesn't need someone walking around. That covers screens, animations and layout (through Xcode, on the plugged-in iPhone or the iOS Simulator), the design check, builds, speech and taps, server replies, and reading logs and trip recordings.
 - **On the phone (leave it to the user):** Pip's main job, which needs a person moving through a real place. That covers pathfinding, guiding, teaching and following routes, GPS walks, finding a room or a grocery aisle, obstacle warnings, ARKit/LiDAR tracking and camera finding. Don't build simulated walks or fake environments to test these. Ask the user to try it, then pull the trip recording (`tools/pull_trip.sh` in the ycgsf repo) and diagnose from the real data.
 
 ## Clean code contract
