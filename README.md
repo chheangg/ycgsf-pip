@@ -72,13 +72,19 @@ flowchart TD
      brain must pick one of those real candidates by id, so it can't invent a door. Signs are read on the phone
      (Apple Vision) and a matching sign wins over a guess. Without LiDAR, Pip takes 8 photos during a slow turn,
      the vision model describes each one, and the brain picks the most promising way.
-   - *Getting out first.* A trip to a place outside usually starts inside a building, where GPS is weak. Pip gets
-     you out before the route starts: you turn around once (it maps the room and reads exit signs), it picks a real
-     door or opening and drops a mark (room position and GPS), you walk there, and at the next decision point it
-     measures whether you got closer. A way that leads away gets walked back to its mark, and the next way is tried.
-     It only judges progress at decision points, because the numbers jump around while you walk. An exit sign
-     overrides the measurements. You're outside only when GPS has been good for a few seconds and the camera agrees
-     (Wi-Fi location can look good indoors). Then the walking route starts from the door you came out of.
+   - *Room by room.* Anything beyond the room you're in (the restroom down the hall, the lobby, the exit, a place
+     outside) is a trip, done one room at a time with `leave_here`. Each hop: you turn around once (Pip maps the
+     room and reads signs), it picks a real door or opening and drops a mark (room position and GPS), you walk
+     there, and at the next decision point it measures whether you got closer. A way that leads away gets walked
+     back to its mark, and the next way is tried. It only judges progress at decision points, because the numbers
+     jump around while you walk, and a matching sign overrides the measurements. A hop ends when you're through a
+     door, in a different kind of space, in the goal room, or outside. Outside only counts when GPS has been good
+     for a few seconds and the camera agrees, because Wi-Fi location can look good indoors.
+   - *The brain re-plans after every hop.* The app sends it what was measured ("went through a door, now in a
+     hallway, 6 m closer"), and it picks the next step: another hop, `go_to` for the last meters of the goal room,
+     the walking route once you're outside, or "you're there". The floor map, the marks and what was tried carry
+     over between hops, so a dead end can still be walked back through the door it came from. After 10 hops it
+     stops and asks you.
 4. **The short-term planner gets you there.** An A* path on the floor map (or the GPS path outdoors) becomes taps
    and short phrases like "Turn left, to 10 o'clock" and "Walk 2 meters, about 3 steps". LiDAR stops you when
    something is close in front. At a door, the vision model reads it once: open or closed, hinged, sliding,

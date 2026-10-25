@@ -118,7 +118,7 @@ const doneChime = () => { tap("both", "note", 1046.5); setTimeout(() => tap("bot
 // While Pip is working on an answer you asked for (LOOK, a look around, picking the next way): a soft slow tick,
 // so silence never means "did it hear me?". The screen shows the same thing (Button States: Working).
 const THINK = { side: "both", interval: 0.8, kind: "think" };
-const thinking = () => Boolean((S.looking && !S.walk) || S.orient?.recognizing || (S.mission && (S.mission.phase === "decide" || S.mission.thinking)));
+const thinking = () => Boolean((S.looking && !S.walk) || S.orient?.recognizing || S.trip?.thinking || (S.mission && (S.mission.phase === "decide" || S.mission.thinking)));
 // What the taps should be doing right now: {side, interval (s), kind} or null for silence.
 function cue() {
   if (S.paused) return null;
@@ -482,7 +482,7 @@ function learnCancel() {   // STOP while teaching: nothing is saved
   say("Stopped. I didn't save the route.");
 }
 function stopAll() {   // the STOP key
-  S.find = null; S.route = null; S.back = null; S.mission = null; S.walk = null; S.walkTok = null; S.preview = null; S.paused = false; S.orient = null;
+  S.find = null; S.route = null; S.back = null; S.mission = null; S.walk = null; S.walkTok = null; S.preview = null; S.paused = false; S.orient = null; S.trip = null;
   say("Stopped."); render();
 }
 
@@ -786,13 +786,13 @@ function buildPath(latlons, steps) {   // -> {o, P: [{x, z, s}], total, man: [{s
   return { o, P, total, man, side };
 }
 // go: they already said yes (coming out of a building): start right away instead of asking again.
-async function gpsWalk(name, to, serverSteps, entrance = true, { go = false } = {}) {   // entrance: at the end, find the door with the camera
+async function gpsWalk(name, to, serverSteps, entrance = true, { go = false, placeId = null } = {}) {   // entrance: at the end, find the door with the camera
   ensureGPS(); ensureCamera();
   S.find = null; S.route = null; S.back = null; S.mission = null; S.walk = null; const tok = S.walkTok = {};
   for (let i = 0; i < 30 && !gpsGood(30); i++) { if (i === 0) say("Getting your location."); await new Promise((r) => setTimeout(r, 500)); }
   if (S.walkTok !== tok) return;
   if (!gpsGood(30)) {   // weak GPS means you're inside: get out first (with LiDAR or the camera), then this route
-    if (NATIVE && !go) return leaveStart({ name, to, steps: serverSteps });
+    if (NATIVE && !go) return leaveStart({ dest: { name, to, steps: serverSteps, placeId } });
     return say("GPS is weak here. Step outside or near a window, and ask me again.");
   }
   const here = { lat: S.fix.lat, lon: S.fix.lon };
@@ -812,7 +812,7 @@ async function gpsWalk(name, to, serverSteps, entrance = true, { go = false } = 
   if (!path || path.total < 5) return say(`I can't get a walking route to ${name} right now.`);
   // 09 Route preview: say how far it is (numbers from the route, not the AI) and ask before a long walk starts
   const mins = Math.max(1, Math.round((secs || path.total / 1.3) / 60));
-  S.preview = { name, path, mins, entrance, to, steps: serverSteps, acc: S.fix.acc };
+  S.preview = { name, path, mins, entrance, to, steps: serverSteps, placeId, acc: S.fix.acc };
   render();
   if (go) { say(`${name} is ${distWords(path.total)} away, about ${mins} minutes walking.`); return previewGo(); }
   followUntil = Date.now() + 20000;   // a plain "yes" counts, no "Hey Pip" needed
@@ -821,7 +821,7 @@ async function gpsWalk(name, to, serverSteps, entrance = true, { go = false } = 
 function previewGo() {   // GO key, or "yes"
   const p = S.preview; if (!p) return;
   S.preview = null;
-  if (!gpsGood(30)) return NATIVE ? leaveStart({ name: p.name, to: p.to, steps: p.steps }) : say("GPS is weak here. Step outside or near a window, and ask me again.");
+  if (!gpsGood(30)) return NATIVE ? leaveStart({ dest: { name: p.name, to: p.to, steps: p.steps, placeId: p.placeId } }) : say("GPS is weak here. Step outside or near a window, and ask me again.");
   S.walk = { name: p.name, path: true, ...p.path, pts: p.path.man.map((m) => ({ gps: null, s: m.s })), i: 0, k: 0, m: 0, phase: "go", onCourse: true,
              saidAt: 0, bearAt: 0, offPathAt: 0, lostSince: null, lostSaid: false, dest: p.entrance ? { name: p.name, to: p.to } : null };
   render();
@@ -1048,9 +1048,10 @@ async function slamMap(m, why) {
     const c = await leaveCheck(m);
     if (S.mission !== m || c.verdict === "done") return;
     if (c.verdict === "back") return slamBacktrack(m, c.why);
+    if (await hopCheck(m, why)) return;                              // through a door, or somewhere new: the brain picks the next step
   }
   m.phase = "map"; m.phaseAt = Date.now(); render();
-  say(m.decisions.length ? "Let me map this spot. Turn slowly all the way around." : "I'll map the room first. Turn slowly all the way around.");
+  say(m.decisions.length || S.trip?.hops ? "Let me map this spot. Turn slowly all the way around." : "I'll map the room first. Turn slowly all the way around.");
   let turned = 0, last = N.heading, readAt = -999, step = -1; const t0 = Date.now(), reads = [];
   const ring = S.orient = { seen: 0, dirs: [], name: m.room, mission: true };   // the screen shows the 360 ring (08c)
   await new Promise((r) => setTimeout(r, 1500));
@@ -1065,8 +1066,15 @@ async function slamMap(m, why) {
   if (S.mission !== m) return;
   doneChime(); say("Okay, stop.", { urgent: true });
   await Promise.race([Promise.all(reads), new Promise((r) => setTimeout(r, 1500))]);
-  if (m.leave) { if (await leaveOutside(m, true)) return; }         // already outside?
-  else await slamCheckRoom(m);                                      // are we already there?
+  if (m.leave) {
+    if (await leaveOutside(m, true) || S.mission !== m) return;    // already outside?
+    if (why === "start") {                                          // where this hop starts (to tell when we've left it)
+      const c = await roomNow(m);
+      if (S.mission !== m) return;
+      m.leave.from = c?.room && c.room !== "unknown" ? c.room : m.leave.from || null;
+      if (c?.inside) return hopDone(m, `reached the ${m.leave.room}`, c);
+    }
+  } else await slamCheckRoom(m);                                    // are we already there?
   if (S.mission !== m || m.done) return;
   const st = signTarget(m);
   if (st) return goToSign(m, st);                                   // a sign that says where the goal is beats guessing
@@ -1078,7 +1086,7 @@ async function slamCheckRoom(m) {
   try {
     const c = await (await fetch(SERVER + "/check_room", { method: "POST", body: fd })).json();
     log("inside", m.room, "?", JSON.stringify(c));
-    if (c.inside) { m.done = true; say(`You're in the ${m.room}.`); S.mission = null; render(); }
+    if (c.inside) { m.done = true; say(`You're in the ${m.room}.`); S.mission = null; S.trip = null; render(); }
     else if (c.room && c.room !== "unknown") { if (m.place && m.place !== c.room) say(`You've left the ${m.place}. This is a ${c.room}.`); m.place = c.room; }
   } catch {}
 }
@@ -1155,19 +1163,101 @@ function slamBacktrack(m, why) {
   askNative({ type: "path", x: back.x, z: back.z }).then((pts) => { if (S.mission === m) m.path = pts || [back]; });
 }
 
-// ---------- LEAVE: get out of this room or building, toward where you're going ----------
-// The long-term plan knows where you're going; this gets you out of where you are. Turn around once (map the room, read
-// exit signs) -> pick a real door or opening -> drop a mark (room position + GPS) -> walk there -> at the next decision
-// point, measure: outside yet? closer than at the mark? A way that led away is walked back to its mark and the next one
-// is tried. Progress is judged only at decision points, never mid-walk (the numbers jump around while you move), and
-// an exit sign beats the measurements. After two wrong ways any way out will do: the route outside sorts out the rest.
+// ---------- TRIPS, ONE ROOM AT A TIME ----------
+// The long-term plan knows where you're going; a hop gets you out of where you are, into the next space. Turn around
+// once (map the room, read signs) -> pick a real door or opening -> drop a mark (room position + GPS) -> walk there ->
+// at the next decision point, measure: closer than at the mark? A way that led away is walked back to its mark and the
+// next one is tried. Progress is judged only at decision points, never mid-walk (the numbers jump around while you
+// move), and a matching sign beats the measurements. A hop is done when you're through a door, in a different kind of
+// space, in the goal room, or outside. Then the brain gets a report of what was measured and picks the next step: another
+// hop, the last meters to the goal room, the walking route once outside, or "you're there". The map, the marks and
+// what was tried carry over from hop to hop, so a dead end can still be walked back through the door it came from.
 const EXIT_WORDS = ["exit", "way out", "lobby", "main entrance", "entrance", "ground floor", "street"];
 const NOT_EXIT = /\b(no|not an?)\s+exit\b|\balarm\b|emergency\s+(exit\s+)?only|do not (use|enter)|staff only/i;
-function leaveStart(dest) {   // dest: {name, to: {lat, lon}, steps} for a trip, or null to just get outside
-  ensureGPS();
-  log("leave", dest ? `toward ${dest.name}` : "to outside");
-  say(dest ? `You're inside, so first I'll get you out, toward ${dest.name}.` : "Okay, let's find the way out.");
-  missionStart(dest?.name || "outside", "door", [], { dest: dest?.to ? dest : null, marks: [], sideways: 0 });
+const MAX_HOPS = 10;
+// goal: a room ("restroom", "the lobby") or "outside"; dest: {name, to: {lat, lon}, steps, placeId} for a place outside
+function leaveStart({ goal = null, dest = null, outside = null } = {}) {
+  const name = dest?.name || goal || "outside";
+  const out = outside ?? (Boolean(dest?.to) || /\b(outside|outdoors|exit|way out|street)\b/i.test(name));
+  const same = (a, b) => String(a).toLowerCase().replace(/^the /, "") === String(b).toLowerCase().replace(/^the /, "");
+  const fresh = !S.trip || !(S.trip.awaiting || same(S.trip.goal, name));   // the brain's next hop after a report continues the trip
+  if (fresh) S.trip = { goal: name, dest: dest?.to ? dest : null, outdoorGoal: out, out: false, hops: 0, rooms: [], carry: null };
+  const T = S.trip, carried = T.carry?.leave || {};
+  if (!fresh && !same(T.goal, name)) { T.goal = name; T.outdoorGoal = out; T.dest = dest?.to ? dest : T.dest; }   // re-planned the goal
+  T.awaiting = false;
+  if (T.outdoorGoal) ensureGPS();
+  log("trip", T.goal, `hop ${T.hops + 1}`, T.outdoorGoal ? "(leaving the building)" : "(indoors)");
+  if (fresh) say(T.dest ? `You're inside, so first I'll get you out, toward ${name}.` : out ? "Okay, let's find the way out." : `Okay, let's head for the ${name}, one room at a time.`);
+  missionStart(T.goal, "door", [], { dest: T.dest, outside: T.outdoorGoal, room: T.outdoorGoal ? null : T.goal, marks: [], sideways: 0, ...carried,
+                                     hop0: (carried.marks || []).length }, T.carry);
+}
+async function roomNow(m) {   // what kind of space this is, and for a room goal whether we're in it (the camera, one frame)
+  const blob = await frameBlob(); if (!blob) return null;
+  const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("room", m.leave.room || "outside");
+  try {
+    const c = await (await fetch(SERVER + "/check_room", { method: "POST", body: fd })).json();
+    log("room now:", c.room, c.inside ? `(in the ${m.leave.room})` : "", c.looking_through_doorway ? "(through a doorway)" : "");
+    if (c.room && c.room !== "unknown") m.place = c.room;
+    return c;
+  } catch { return null; }
+}
+async function hopCheck(m, why) {   // at a decision point: is this hop's objective done?
+  const c = await roomNow(m);
+  if (S.mission !== m) return true;
+  const room = c?.room && c.room !== "unknown" ? c.room : null;
+  if (/through/.test(why)) { hopDone(m, "went through a door", c); return true; }
+  if (!m.leave.from && room && !c?.inside) { m.leave.from = room; return false; }   // didn't know where we started: now we do
+  if (c?.inside || (room && room !== m.leave.from)) { hopDone(m, c?.inside ? `reached the ${m.leave.room}` : `came out of the ${m.leave.from || "room"}`, c); return true; }
+  return false;
+}
+const aRoom = (r) => (/^[aeiou]/i.test(r) ? `an ${r}` : `a ${r}`);
+function hopDone(m, how, c = null) {
+  const T = S.trip, L = m.leave;
+  const now = how === "outside" ? "outside" : c?.room && c.room !== "unknown" ? c.room : null;
+  const p = leaveProgress(m, L.marks[L.hop0 || 0]);          // since this hop started
+  S.mission = null; render(); doneChime();
+  if (!T) return say(how === "outside" ? "We're outside." : "Okay, we're out.");
+  T.hops++; T.nowIn = now; T.out = how === "outside"; T.atGoal = Boolean(c?.inside); if (now) T.rooms.push(now);
+  T.carry = { visited: m.visited, decisions: m.decisions, history: m.history, legs: m.legs, backtracks: m.backtracks, tried: m.tried,
+              leave: { marks: L.marks, os: L.os, oc: L.oc, goalB: L.goalB } };
+  say(how === "outside" ? "We're outside." : c?.inside ? `This looks like the ${L.room}.` :
+      `We're ${/door/.test(how) ? "through the door" : "out of there"}${now ? `, in ${aRoom(now)}` : ""}.`);
+  const facts = [`Step ${T.hops} of the trip to ${T.goal} is done: ${how}${now && now !== "outside" ? `, now in ${aRoom(now)}` : ""}.`,
+    c?.inside ? `The camera agrees this is the ${L.room}.` : "",
+    T.out ? `They're outside${S.fix ? ` (GPS ±${Math.round(S.fix.acc)} m)` : ""}.` : T.outdoorGoal ? "Still inside." : "",
+    p ? `${Math.abs(Math.round(p.closer))} m ${p.closer >= 0 ? "closer to" : "farther from"} ${T.goal} than at the start of this step.` : "",
+    `Spaces so far: ${T.rooms.join(", ") || "none named"}.`].filter(Boolean).join(" ");
+  tripReport(T, facts);
+}
+// The brain decides what's next after each hop. If it can't be reached, do the obvious next step ourselves.
+async function tripReport(T, facts) {
+  if (T.hops >= MAX_HOPS) { S.trip = null; return say("We've been through a lot of rooms and I'm not sure we're getting there. Do you know the way, or is there someone to ask?"); }
+  log("trip report:", facts);
+  T.thinking = true; T.awaiting = true;
+  try {
+    const url = `${SERVER}/talk?session=${SESSION}&event=1&text=${encodeURIComponent(facts)}&ctx=${encodeURIComponent(JSON.stringify(status()))}`;
+    const r = await (await fetch(url, { method: "POST", body: "", signal: AbortSignal.timeout(30000) })).json();
+    T.thinking = false;
+    if (S.trip !== T || S.mission || S.walk) return;          // they stopped it, or asked for something else meanwhile
+    log("trip next:", (r.tools || []).map((t) => t.tool).join(",") || "-", r.action?.type || "(none)", r.say || "");
+    if (!r.action) {
+      const atGoal = T.atGoal || (T.out && !T.dest);
+      if (!atGoal && !/\?\s*$/.test(r.say || "")) return tripOn(T, "the brain named no next step");   // it narrated instead of acting
+      S.trip = null;                                           // at the goal, or a question for the user
+    }
+    return act({ ...r, heard: "" });
+  } catch (e) {
+    T.thinking = false; log("trip report failed", e);
+    if (S.trip !== T || S.mission || S.walk) return;
+    tripOn(T, "the brain didn't answer");
+  }
+}
+function tripOn(T, why) {   // the obvious next step, when the brain can't or won't pick one
+  log("trip: going on by myself,", why);
+  if (T.out && T.dest) { S.trip = null; return gpsWalk(T.dest.name, T.dest.to, T.dest.steps, true, { go: true, placeId: T.dest.placeId }); }
+  if (T.atGoal) { S.trip = null; return say(`You're in the ${T.goal}.`); }   // the camera already checked: right room, proof in view
+  if (T.out) { S.trip = null; return; }
+  leaveStart({ goal: T.goal, dest: T.dest, outside: T.outdoorGoal });
 }
 function leaveSample(m) {   // compass minus room heading, averaged as unit vectors: turns room directions into map directions
   if (N.compass == null || N.heading == null) return;
@@ -1188,8 +1278,8 @@ function leaveMark(m, what) {
   log("leave mark:", what, N.pose ? `room ${N.pose.x.toFixed(1)},${N.pose.z.toFixed(1)}` : "", gps ? `gps ±${Math.round(gps.acc)} m` : "no gps",
       g != null ? `goal at ${Math.round(g)}°` : "");
 }
-function leaveProgress(m) {   // meters closer to the destination since the last mark (+ = closer), or null if it can't be measured
-  const k = m.leave.marks.at(-1), to = m.leave.dest?.to;
+function leaveProgress(m, k = m.leave.marks.at(-1)) {   // meters closer to the destination since mark k (+ = closer), or null if it can't be measured
+  const to = m.leave.dest?.to;
   if (!k || !to) return null;
   if (k.gps && gpsGood(25)) {   // GPS: only a change bigger than the two fixes' error counts
     const d0 = dist(k.gps, to), d1 = dist(S.fix, to);
@@ -1232,6 +1322,7 @@ async function leaveCheck(m) {   // -> {verdict: "done" | "back" | "on", why}
 // glass door looks like outside). force: ask the camera now (at a decision point) as long as GPS is fair.
 async function leaveOutside(m, force = false) {
   const L = m.leave, t = Date.now();
+  if (!L.outside) return false;                                     // a room goal: staying indoors
   L.goodSince = gpsGood(12) ? (L.goodSince ?? t) : null;
   if (force ? !gpsGood(30) : !(L.goodSince && t - L.goodSince > 4000)) return false;
   if (L.checking || t - (L.checkedAt || 0) < 8000) return false;
@@ -1242,16 +1333,10 @@ async function leaveOutside(m, force = false) {
     const c = await (await fetch(SERVER + "/check_room", { method: "POST", body: fd })).json();
     log("outside?", c.room, c.looking_through_doorway ? "(through a doorway)" : "", `gps ±${Math.round(S.fix?.acc ?? 0)} m`);
     if (S.mission !== m || String(c.room).toLowerCase() !== "outside" || c.looking_through_doorway) return false;
-    leaveDone(m);
+    hopDone(m, "outside", c);
     return true;
   } catch { return false; }
   finally { L.checking = false; }
-}
-function leaveDone(m) {
-  const d = m.leave.dest;
-  S.mission = null; render(); doneChime();
-  say("We're outside.");
-  if (d) gpsWalk(d.name, d.to, d.steps, true, { go: true });   // hand back to the long-term plan, from where you came out
 }
 
 // ---------- GO TO A ROOM: door -> line up -> walk -> through -> verify (done only on proof) ----------
@@ -1276,15 +1361,17 @@ function track(m, hit) {
   m.centered = m.centered ? Math.abs(m.dxs) < leave : Math.abs(m.dxs) < enter;
   return m.centered ? "center" : sideOf(m.dxs);
 }
-function missionStart(room, via, proof, leave = null) {
+// leave: this is one hop of a trip (see TRIPS); carry: what the earlier hops mapped, tried and remembered
+function missionStart(room, via, proof, leave = null, carry = null) {
   ensureCamera();
   S.find = null; S.route = null; S.back = null; S.walk = null; S.walkTok = null; S.preview = null;
   const m = S.mission = { room, via: via || "door", proof: proof || ["toilet", "sink"], phase: "plan", phaseAt: Date.now(),
-                door: null, doorAt: 0, proofHit: null, proofAt: 0, saidAt: 0, lastSay: "", tries: 0, history: [], planning: false, leave };
-  const goal = leave ? { words: EXIT_WORDS, item: false } : goalOf(room);
+                door: null, doorAt: 0, proofHit: null, proofAt: 0, saidAt: 0, lastSay: "", tries: 0, history: [...(carry?.history || [])],
+                planning: false, leave, legs: carry?.legs, backtracks: carry?.backtracks, tried: carry?.tried };
+  const goal = leave ? (leave.room ? goalOf(leave.room) : { words: EXIT_WORDS, item: false }) : goalOf(room);
   m.signWords = goal.words; m.signs = []; m.seenSigns = []; m.item = goal.item ? room : null;   // "cereal" is an item, not a room
   log("mission", room, "reads signs for:", m.signWords.join(", "));
-  if (slamReady()) { m.slam = true; m.visited = []; m.decisions = []; return slamMap(m, "start"); }
+  if (slamReady()) { m.slam = true; m.visited = carry?.visited || []; m.decisions = carry?.decisions || []; return slamMap(m, "start"); }
   lookAround("start");
 }
 // Deduction step: the user turns slowly in place while Pip grabs ~8 views; the vision model describes each
@@ -1292,7 +1379,7 @@ function missionStart(room, via, proof, leave = null) {
 function giveUp(m) {
   say(m.leave ? "I'm stuck finding the way out. Do you know which way the exit is, or is there someone nearby to ask?"
               : `I'm stuck finding the ${m.room}. Can you tell me anything about where it is, or should I learn the way with you?`);
-  S.mission = null; render();
+  S.mission = null; S.trip = null; render();
 }
 async function lookAround(why) {
   const m = S.mission; if (!m || m.planning) return;
@@ -1302,6 +1389,7 @@ async function lookAround(why) {
     m.planning = true; const c = await leaveCheck(m); m.planning = false;
     if (S.mission !== m || c.verdict === "done") return;
     if (c.verdict === "back") return backtrack(m, c.why);
+    if (/through/.test(why)) return hopCheck(m, why);               // through a door: this hop is done
   }
   m.planning = true; m.phase = "sweep"; m.phaseAt = Date.now(); render();
   await ensureCamera();
@@ -1337,12 +1425,17 @@ async function lookAround(why) {
     const p = r.plan || {};
     log("deduce:", p.why || "", "->", JSON.stringify(p), `${r.ms}ms`);
     const place = p.place || "unknown";
-    if (place !== "unknown" && m.place && place !== m.place) {
+    if (!m.leave && place !== "unknown" && m.place && place !== m.place) {
       say(place === "hallway" ? `We're out of the ${m.place}, you're in a hallway now.` : `You've left the ${m.place}. This looks like a ${place}.`);
     }
     m.history.push(`${why}: now in ${place}${m.place ? ` (was ${m.place})` : ""}; looked around (${(r.views || []).map((v) => v.facing || "?").join(", ")}); chose ${p.target || p.search} because ${p.why || "?"}`);
     if (place !== "unknown") m.place = place;
-    if (p.reached && m.leave) {                                    // "at the exit": outside counts only when measured
+    if (m.leave && place !== "unknown") {                          // a hop is done once we're somewhere new
+      if (!m.leave.from) m.leave.from = place;
+      else if (place !== m.leave.from) return hopDone(m, `came out of the ${m.leave.from}`, { room: place });
+    }
+    if (p.reached && m.leave) {                                    // at the goal: the brain sends go_to to confirm; outside only when measured
+      if (m.leave.room) return hopDone(m, `reached the ${m.leave.room}`, { room: place, inside: true });
       if (await leaveOutside(m, true)) return;
       p.reached = false; p.search = "door"; p.target = p.target || "the door out";
     }
@@ -1648,7 +1741,7 @@ async function missionStep(blob) {
                                                       : `I see the ${proof.name}${Math.abs(proof.dx) > 0.12 ? ` to your ${sideOf(proof.dx)}` : " straight ahead"}. Walk toward it slowly.`);
     if (Math.abs(proof.dx) <= 0.12 && proof.size > (isRoom ? 0.08 : 0.25)) {
       say(isRoom ? `You're in the ${m.room}. The ${proof.name} is right in front of you.` : `The ${proof.name} is right in front of you. Reach forward.`);
-      S.mission = null; render();
+      S.mission = null; S.trip = null; render();
     }
     return;
   }
@@ -1703,7 +1796,7 @@ async function missionStep(blob) {
     case "verify":
       if (since > 14000) {
         m.tries++;
-        if (m.tries >= 3) { say(`I couldn't find the ${m.room}. Want to teach me the way once, so I know it next time?`); S.mission = null; return render(); }
+        if (m.tries >= 3) { say(`I couldn't find the ${m.room}. Want to teach me the way once, so I know it next time?`); S.mission = null; S.trip = null; return render(); }
         return backtrack(m, `this place is not the ${m.room}`);
       }
       return;
@@ -1934,7 +2027,9 @@ function status() {
            gps_accuracy_m: S.acc == null ? null : Math.round(S.acc), navigating_to: S.route?.name || S.walk?.name || null,
            next_turn: S.route?.steps[S.stepIdx]?.turn || null, saved_spots: S.spots.map((s) => s.label),
            taught_routes: Object.keys(routesStore()), hazards: S.hazards.map((h) => `${h.label} ${h.side}`),
-           learning: S.learning?.name || null };
+           learning: S.learning?.name || null,
+           trip: S.trip ? { goal: S.trip.goal, place_id: S.trip.dest?.placeId || null, steps_done: S.trip.hops, now_in: S.trip.nowIn || null,
+                            outside: S.trip.out, at_goal: Boolean(S.trip.atGoal), spaces_so_far: S.trip.rooms } : null };
 }
 async function askPip({ body, text, wake = false }) {
   const url = `${SERVER}/talk?session=${SESSION}&ctx=${encodeURIComponent(JSON.stringify(status()))}` + (text ? `&text=${encodeURIComponent(text)}` : "") +
@@ -1973,7 +2068,7 @@ const DIRECTION_Q = /\b(where|which way|what now|how (much|far)|turn|go now|next
 const ARRIVED = /\b(we'?re here|we are here|i'?m here|i am here|we made it|made it|arrived|this is it)\b/i;
 // While Pip is busy, a remark about the app ("you're not showing the 360 direction thing") must not start or replace a
 // task. Trip 2026-10-25 13:52: two such remarks restarted the shower search and started "go back". A new task needs a request.
-const TASK_ACTIONS = new Set(["mission", "back", "replay", "find", "navigate", "learn_start"]);
+const TASK_ACTIONS = new Set(["mission", "back", "replay", "find", "navigate", "learn_start", "leave"]);
 const ASKED = /\b(take|go|bring|lead|guide|navigate|walk|head|find|look|search|where|back|return|stop|cancel|start|begin|restart|teach|learn|show me|help|need|want|please|let'?s|can you|could you)\b/i;
 async function act(r) {
   const a = r.action, heard = r.heard || "";
@@ -1986,16 +2081,20 @@ async function act(r) {
   if (S.learning && a?.type === "learn_start") return say(`I'm still recording the way to ${S.learning.name}. You lead: walk there yourself, and say "we're here" when you arrive.`);
   if (S.learning && !a && DIRECTION_Q.test(heard)) return say(`This time you lead, and I remember the way. Walk to ${S.learning.name}, and say "we're here" when you arrive.`);
   if (!a && (S.walk || S.back) && DIRECTION_Q.test(heard)) return say(currentDirection());   // the route knows; the brain would guess
-  if (a && r.say && ["replay", "learn_start", "learn_end", "mission", "find"].includes(a.type)) return act({ ...r, say: null, heard: "" });   // these speak for themselves
+  if (a && r.say && ["replay", "learn_start", "learn_end", "mission", "find", "leave"].includes(a.type)) return act({ ...r, say: null, heard: "" });   // these speak for themselves
   if (r.say && !a && r.say === lastBrainSay && Date.now() - lastBrainAt < 60000) say("Okay.");      // don't repeat the same line
   else if (r.say) say(r.say);
   if (r.say) { lastBrainSay = r.say; lastBrainAt = Date.now(); }
   if (!a) return;
   switch (a.type) {
-    case "navigate": return gpsWalk(a.route.name, a.route.to, a.route.steps);
+    case "navigate": {   // the route takes over; coming out of a building they already agreed, so it starts at once
+      const fromTrip = Boolean(S.trip); S.trip = null;
+      return gpsWalk(a.route.name, a.route.to, a.route.steps, true, { go: fromTrip, placeId: a.route.place_id });
+    }
     case "find": return findStart(a.target);   // the app says it (the brain once said "I found it" before looking)
     case "mission": return missionStart(a.room, a.via, a.proof);
-    case "leave": return leaveStart(a.to ? { name: a.name || "there", to: a.to, steps: a.steps } : null);
+    case "leave": return leaveStart({ goal: a.goal, outside: a.outside ?? null,
+                                      dest: a.to ? { name: a.name || a.goal, to: a.to, steps: a.steps, placeId: a.place_id } : S.trip?.dest || null });
     case "describe": return describe("What's around me?", false);
     case "gps_on": ensureGPS(); return;
     case "look": { const r = await lookAndPlan(a.goal || "where I want to go"); if (r) say(r.plan.say); return; }
@@ -2007,7 +2106,7 @@ async function act(r) {
     case "repeat": return say(S.lastSpoken);
     case "pause": S.paused = true; return;
     case "resume": S.paused = false; return;
-    case "stop": S.find = null; S.route = null; S.back = null; S.mission = null; S.walk = null; S.walkTok = null; S.preview = null; S.orient = null; render(); return;
+    case "stop": S.find = null; S.route = null; S.back = null; S.mission = null; S.walk = null; S.walkTok = null; S.preview = null; S.orient = null; S.trip = null; render(); return;
   }
 }
 async function describe(question = "What's around me?", interrupt = true) {
