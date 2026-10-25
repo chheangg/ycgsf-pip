@@ -302,8 +302,14 @@ function missionStart(room, via, proof) {
 }
 // Deduction step: the user turns slowly in place while Pip grabs ~8 views; the vision model describes each
 // and the brain picks the most promising direction (doorway, hallway, a door with a sign...).
+function giveUp(m) {
+  say(`I'm stuck finding the ${m.room}. Can you tell me anything about where it is, or should I learn the way with you?`);
+  S.mission = null; render();
+}
 async function lookAround(why) {
   const m = S.mission; if (!m || m.planning) return;
+  m.looks = (m.looks || 0) + 1;
+  if (m.looks > 6 || (m.backtracks || 0) >= 3) return giveUp(m);
   m.planning = true; m.phase = "sweep"; m.phaseAt = Date.now(); render();
   await ensureCamera();
   say(m.history.length ? "Let me look around here. Turn slowly to your right, all the way around." :
@@ -326,6 +332,9 @@ async function lookAround(why) {
     m.history.push(`${why}: looked around (${(r.views || []).map((v) => v.facing || "?").join(", ")}); chose ${p.target || p.search} because ${p.why || "?"}`);
     if (p.reached) { m.phase = "verify"; m.phaseAt = Date.now(); say(p.say || `I think this is the ${m.room}. Let me check.`); return; }
     if (p.backtrack) { m.planning = false; return backtrack(m, p.why || "nothing here leads on"); }
+    if ((m.tried || []).some((x) => x && p.target && x.toLowerCase() === String(p.target).toLowerCase()) && /came back/.test(why)) {
+      m.planning = false; return backtrack(m, "I'm going in circles here");
+    }
     m.via = (p.search || "door").toLowerCase(); m.target = p.target || m.via;
     m.door = null; m.doorAt = 0; m.dxs = null; m.centered = false; m.lastDir = null; m.gotTapped = false; m.doorChecks = 0;
     say(p.say || `Let's head for the ${m.target}.`);
@@ -430,7 +439,7 @@ function mSay(text, every = 4000) {
 }
 function mPhase(phase, text) {
   const m = S.mission; m.phase = phase; m.phaseAt = Date.now();
-  if (phase === "approach") m.legStart = Date.now();          // timing this leg, so it can be walked back
+  if (phase === "approach") { m.legStart = Date.now(); m.bestSize = 0; m.bestAt = Date.now(); }   // timing this leg + progress
   if (text) mSay(text, 0); log("mission:", phase); render();
 }
 function endLeg(m, extraSeconds = 0) {
@@ -443,6 +452,9 @@ function endLeg(m, extraSeconds = 0) {
 // Dead end: walk the last leg back (turn around, back through the door, N seconds), then look around again
 // and try something else. Uses the timed-steps runner (same as replaying taught routes).
 function backtrack(m, why) {
+  m.backtracks = (m.backtracks || 0) + 1;
+  if (m.backtracks > 3) return giveUp(m);
+  m.tried = [...(m.tried || []), m.target || m.via];
   const leg = (m.legs || []).pop();
   if (!leg) { say("This is a dead end, and I don't have a way back recorded. Let me look around."); return lookAround(why); }
   m.history.push(`dead end: ${why}. Went back from ${leg.target}; don't try it again.`);
@@ -450,7 +462,7 @@ function backtrack(m, why) {
   const walk = Math.max(2, leg.seconds);
   S.back = { steps: [{ action: "turn_around", seconds: 0 }, { action: "walk", seconds: walk, landmark: leg.door ? "door" : null }, { action: "arrive" }],
              i: 0, started: Date.now(), arriveMsg: "We're back. Let me look around again.", onArrive: () => S.mission && lookAround(`came back from ${leg.target}`) };
-  say(`This way's a dead end. Let's go back. Turn around${leg.door ? ", go back through the door," : ""} and walk about ${walk} seconds.`);
+  say(`${why ? why[0].toUpperCase() + why.slice(1) + ". " : ""}Let's go back. Turn around${leg.door ? ", go back through the door," : ""} and walk about ${walk} seconds.`);
 }
 function missionCue() {
   const m = S.mission, t = Date.now();
@@ -533,6 +545,10 @@ async function missionStep(blob) {
       return;
     }
     case "approach":
+      if (seeDoor) {
+        if (!m.bestSize || m.door.size > m.bestSize * 1.2) { m.bestSize = m.door.size; m.bestAt = t; }
+        else if (t - (m.bestAt || t) > 15000) { m.bestSize = 0; return lookAround("not getting any closer"); }
+      }
       if (!seeDoor && since > 4000) return lookAround(`lost sight of the ${m.via} while walking`);
       if (seeDoor && m.door.size > 0.3) {
         endLeg(m, /door/.test(m.via) ? 3 : 0);                              // +3 s for walking through a door
