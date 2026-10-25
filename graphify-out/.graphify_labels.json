@@ -7,7 +7,7 @@
   "5": "ARSense",
   "6": "ui.js",
   "7": "app.py",
-  "8": "log",
+  "8": "Mic",
   "9": "Camera",
   "10": "Voice",
   "11": "post",
@@ -20,7 +20,7 @@
   "18": "missionStep",
   "19": "Trip",
   "20": "trip_report.py",
-  "21": "gpsWalk",
+  "21": ".depthDataOutput",
   "22": "Any",
   "23": "panorama",
   "24": "Bool",
@@ -35,5 +35,8 @@
   "33": "restart_pip.ps1",
   "34": "pull_trip.sh",
   "35": "String",
-  "36": "URL"
+  "36": "URL",
+  "37": "ARSense.swift",
+  "38": "roomDist",
+  "39": "Sensors.swift"
 }
