@@ -220,7 +220,8 @@ async function planTo(body) {
 }
 
 // ---------- backtrack: GPS -> plan back; no GPS -> reverse the remembered trail ----------
-async function goBack(label) {   // uses GPS only if it's already on; otherwise the remembered path
+async function goBack(label) {
+  if (S.mission) return backtrack(S.mission, "the user said this way is wrong");   // uses GPS only if it's already on; otherwise the remembered path
   const spot = label ? S.spots.find((s) => s.label.toLowerCase().includes(label.toLowerCase())) : S.spots.at(-1);
   if (S.gpsOk && (spot?.pos || S.crumbs[0])) return planTo({ to: spot?.pos || S.crumbs[0] });
   endSegment(null);
@@ -248,7 +249,7 @@ function backCue() {
     return left < 6 ? { side: b.steps[b.i + 1]?.action === "left" ? "left" : b.steps[b.i + 1]?.action === "right" ? "right" : "both",
                         interval: Math.max(0.15, left / 4), kind: "tap" } : null;
   }
-  if (st.action === "arrive") { say(b.arriveMsg || "You should be back where you started."); S.back = null; }
+  if (st.action === "arrive") { say(b.arriveMsg || "You should be back where you started."); S.back = null; b.onArrive?.(); }
   return null;
 }
 
@@ -324,6 +325,7 @@ async function lookAround(why) {
     log("deduce:", p.why || "", "->", JSON.stringify(p), `${r.ms}ms`);
     m.history.push(`${why}: looked around (${(r.views || []).map((v) => v.facing || "?").join(", ")}); chose ${p.target || p.search} because ${p.why || "?"}`);
     if (p.reached) { m.phase = "verify"; m.phaseAt = Date.now(); say(p.say || `I think this is the ${m.room}. Let me check.`); return; }
+    if (p.backtrack) { m.planning = false; return backtrack(m, p.why || "nothing here leads on"); }
     m.via = (p.search || "door").toLowerCase(); m.target = p.target || m.via;
     m.door = null; m.doorAt = 0; m.dxs = null; m.centered = false; m.lastDir = null; m.gotTapped = false; m.doorChecks = 0;
     say(p.say || `Let's head for the ${m.target}.`);
@@ -331,6 +333,32 @@ async function lookAround(why) {
   } catch (e) { log("look around failed", e); m.via = "door"; m.phase = "scan"; m.phaseAt = Date.now(); say("Turn slowly, I'm looking for a door."); }
   finally { if (S.mission) S.mission.planning = false; }
 }
+// Guide the camera (and the hand behind it) onto the door handle, then say where to reach.
+async function handleStep(m, blob) {
+  const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("target", "door handle");
+  const r = await (await fetch(SERVER + "/locate", { method: "POST", body: fd })).json();
+  if (!S.mission || m.phase !== "handle") return;
+  const t = Date.now();
+  if (!r.found) {
+    if (t - m.phaseAt > 15000) { say("I can't spot the handle. Feel along the door edge, about waist height."); m.phase = "door"; m.phaseAt = t; render(); }
+    return;
+  }
+  m.door = { dx: r.dx, size: r.size }; m.doorAt = t;
+  const dir = track(m, r);                                   // smoothed left/right with a dead zone
+  const vert = r.dy < -0.18 ? "up" : r.dy > 0.18 ? "down" : null;
+  const cueDir = dir !== "center" ? dir : vert;
+  if (cueDir) {
+    m.gotTapped = false;
+    if (cueDir !== m.lastDir) { m.lastDir = cueDir; mSay(`${cueDir} ${cueDir}`, 0); } else mSay(`${cueDir} ${cueDir}`, 5000);
+    return;
+  }
+  const h = m.handleInfo?.handle_height;
+  const height = h === "low" ? "low, about knee height" : h === "chest" ? "at about chest height" : "at about waist height";
+  const how = /pull/.test(m.handleInfo?.opens || "") ? "pull it toward you" : /push/.test(m.handleInfo?.opens || "") ? "push the door" : "open the door";
+  say(`The handle is right in front of you. Reach straight forward, ${height}, then ${how}.`);
+  m.phase = "door"; m.phaseAt = t; render();                 // now wait until the door is open
+}
+
 // Facing a blank wall with nothing to aim at: tell the user, like a friend would.
 async function wallCheck(m) {
   m.wallCheckAt = Date.now();
@@ -353,8 +381,20 @@ async function doorStep(m) {
     const d = await (await fetch(SERVER + "/door", { method: "POST", body: fd })).json();
     if (!S.mission) return;
     log("door:", JSON.stringify(d));
-    if (d.door === "open") { say(d.say || "It's open. Walk through slowly, about two steps."); m.phase = "through"; m.phaseAt = Date.now(); render(); return; }
     if (d.door === "none") { return lookAround("thought I was at a door but don't see one up close"); }
+    if (d.door === "open" || d.type === "automatic") {
+      say(d.type === "automatic" ? "It's an automatic door. Just walk straight ahead slowly, it'll open." : "It's open. Walk through slowly, about two steps.");
+      m.phase = "through"; m.phaseAt = Date.now(); render(); return;
+    }
+    if (d.type === "sliding" && m.phase !== "door") {
+      say(`It's a sliding door. ${/left/.test(d.opens) ? "Slide it to the left." : /right/.test(d.opens) ? "Slide it to the right." : "Find the edge and slide it open."}`);
+      m.phase = "door"; m.phaseAt = Date.now(); render(); return;
+    }
+    if (d.type !== "sliding" && m.phase !== "door" && m.phase !== "handle") {   // hinged and closed: guide the hand to the handle
+      m.handleInfo = d; m.phase = "handle"; m.phaseAt = Date.now(); m.dxs = null; m.centered = false; m.lastDir = null; render();
+      say(`The door's closed. Let's find the handle${d.handle === "left" || d.handle === "right" ? `, it's on the ${d.handle}` : ""}. Point the camera at it.`);
+      return;
+    }
     const first = m.phase !== "door";
     m.phase = "door"; m.phaseAt = Date.now(); m.doorChecks = (m.doorChecks || 0) + 1; render();
     if (first) say(d.say || "The door's closed. Find the handle and open it.");
@@ -388,14 +428,38 @@ function mSay(text, every = 4000) {
   if (speaking() && every > 0) return;      // never pile up guidance chatter
   if (text !== m.lastSay || Date.now() - m.saidAt > every) { say(text); m.lastSay = text; m.saidAt = Date.now(); }
 }
-function mPhase(phase, text) { const m = S.mission; m.phase = phase; m.phaseAt = Date.now(); if (text) mSay(text, 0); log("mission:", phase); render(); }
+function mPhase(phase, text) {
+  const m = S.mission; m.phase = phase; m.phaseAt = Date.now();
+  if (phase === "approach") m.legStart = Date.now();          // timing this leg, so it can be walked back
+  if (text) mSay(text, 0); log("mission:", phase); render();
+}
+function endLeg(m, extraSeconds = 0) {
+  if (!m.legStart) return;
+  m.legs = m.legs || [];
+  m.legs.push({ target: m.target || m.via, seconds: Math.round((Date.now() - m.legStart) / 1000 + extraSeconds), door: /door/.test(m.via) });
+  m.legStart = 0;
+  log("leg:", JSON.stringify(m.legs.at(-1)));
+}
+// Dead end: walk the last leg back (turn around, back through the door, N seconds), then look around again
+// and try something else. Uses the timed-steps runner (same as replaying taught routes).
+function backtrack(m, why) {
+  const leg = (m.legs || []).pop();
+  if (!leg) { say("This is a dead end, and I don't have a way back recorded. Let me look around."); return lookAround(why); }
+  m.history.push(`dead end: ${why}. Went back from ${leg.target}; don't try it again.`);
+  m.phase = "backtrack"; m.phaseAt = Date.now(); render();
+  const walk = Math.max(2, leg.seconds);
+  S.back = { steps: [{ action: "turn_around", seconds: 0 }, { action: "walk", seconds: walk, landmark: leg.door ? "door" : null }, { action: "arrive" }],
+             i: 0, started: Date.now(), arriveMsg: "We're back. Let me look around again.", onArrive: () => S.mission && lookAround(`came back from ${leg.target}`) };
+  say(`This way's a dead end. Let's go back. Turn around${leg.door ? ", go back through the door," : ""} and walk about ${walk} seconds.`);
+}
 function missionCue() {
   const m = S.mission, t = Date.now();
+  if (m.phase === "backtrack") return S.back ? backCue() : null;
   const target = m.phase === "arrive" ? m.proofHit : m.door;
   const fresh = target && t - (m.phase === "arrive" ? m.proofAt : m.doorAt) < 1500;
   if (S.hint === "stop" && (m.phase === "approach")) return { side: "both", interval: 0.25, kind: "stop" };
   if (!fresh) return null;
-  if (m.phase === "orient" || m.phase === "arrive") {
+  if (m.phase === "orient" || m.phase === "arrive" || m.phase === "handle") {
     if (!m.centered) return { side: sideOf(m.dxs), interval: 1.1, kind: "tap" };   // gentle, about once a second
     if (!m.gotTapped) { m.gotTapped = true; return { side: "both", interval: 0.2, kind: "got", double: true }; }
     return null;                                                                     // on target: quiet
@@ -405,7 +469,8 @@ function missionCue() {
 }
 async function missionStep(blob) {
   const m = S.mission;
-  if (m.planning || m.phase === "plan" || m.phase === "sweep") return;
+  if (m.planning || m.phase === "plan" || m.phase === "sweep" || m.phase === "backtrack") return;
+  if (m.phase === "handle") return handleStep(m, blob);
   const labels = [m.via, ...m.proof].join(",");
   const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("labels", labels);
   const r = await (await fetch(SERVER + "/scan", { method: "POST", body: fd })).json();
@@ -416,10 +481,23 @@ async function missionStep(blob) {
   $("clear").textContent = `${m.phase} · door ${door ? Math.round(door.score * 100) + "%" : "-"} · ${proof ? proof.name : "no proof"} · ${r.ms} ms`;
   $("clear").className = "v " + (proof ? "ok" : "warn");
 
-  // Proof of the room beats everything: that's the only way to finish.
-  if (proof && (m.phase === "verify" || m.phase === "through" || proof.score >= 0.3)) {
+  // Proof of the room beats everything: that's the only way to finish. But detectors confuse doors with
+  // showers or sinks, so a room needs the vision model to agree we're INSIDE it first.
+  const isRoomGoal = !m.proof.includes(m.room);
+  if (proof && isRoomGoal && !m.roomOk) {
+    if (t > (m.roomMuteUntil || 0) && !m.roomChecking) {
+      m.roomChecking = true;
+      const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("room", m.room);
+      fetch(SERVER + "/check_room", { method: "POST", body: fd }).then((x) => x.json()).then((c) => {
+        if (!S.mission) return; S.mission.roomChecking = false;
+        log("inside", m.room, "?", JSON.stringify(c));
+        if (c.inside) S.mission.roomOk = true; else S.mission.roomMuteUntil = Date.now() + 12000;
+      }).catch(() => { if (S.mission) S.mission.roomChecking = false; });
+    }
+  }
+  if (proof && (!isRoomGoal || m.roomOk) && (m.phase === "verify" || m.phase === "through" || proof.score >= 0.3)) {
     m.proofHit = proof; m.proofAt = t;
-    const isRoom = !m.proof.includes(m.room);   // a room is proven by what's in it; a target by itself
+    const isRoom = isRoomGoal;   // a room is proven by what's in it; a target by itself
     if (m.phase !== "arrive") mPhase("arrive", isRoom ? `This is the ${m.room}: I can see a ${proof.name}${Math.abs(proof.dx) > 0.12 ? ` to your ${sideOf(proof.dx)}` : " ahead"}.`
                                                       : `I see the ${proof.name}${Math.abs(proof.dx) > 0.12 ? ` to your ${sideOf(proof.dx)}` : " straight ahead"}. Walk toward it slowly.`);
     if (Math.abs(proof.dx) <= 0.12 && proof.size > (isRoom ? 0.08 : 0.25)) {
@@ -457,6 +535,7 @@ async function missionStep(blob) {
     case "approach":
       if (!seeDoor && since > 4000) return lookAround(`lost sight of the ${m.via} while walking`);
       if (seeDoor && m.door.size > 0.3) {
+        endLeg(m, /door/.test(m.via) ? 3 : 0);                              // +3 s for walking through a door
         if (/door/.test(m.via)) return doorStep(m);                            // a door has to be opened first
         return lookAround(`reached the ${m.target || m.via}`);                // other landmarks: look around, deduce
       }
@@ -472,7 +551,7 @@ async function missionStep(blob) {
       if (since > 14000) {
         m.tries++;
         if (m.tries >= 3) { say(`I couldn't find the ${m.room}. Want to teach me the way once, so I know it next time?`); S.mission = null; return render(); }
-        return lookAround(`this place is not the ${m.room}; need another way`);
+        return backtrack(m, `this place is not the ${m.room}`);
       }
       return;
   }
