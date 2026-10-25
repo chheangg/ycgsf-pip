@@ -1601,11 +1601,32 @@ async function obstacleCheck(m) {
   if (N.depth) {                                       // LiDAR: real distances, no guessing
     const targetClose = m.pin && N.pose && roomDist(N.pose, m.pin) < 1.2;
     if (N.depth.ahead < 0.7 && !targetClose) {
+      // Trip 15:04: ARKit missed the exit door, so it was an "opening"; LiDAR saw the closed door at 0.3 m and Pip said
+      // "more room on your right", steering the user around the door they had to open. Ask the camera first.
+      if (!m.doorAsked && !m.doorBusy) {
+        m.doorAsked = true; m.doorBusy = true;
+        try {
+          const d = await readDoor();
+          if (S.mission !== m) return;
+          if (d && d.door !== "none") {
+            log("blocked by a door:", d.door, d.type);
+            if (m.slam && N.pose) m.doorPos = { x: N.pose.x, z: N.pose.z };
+            m.doorBusy = false;
+            return doorStep(m);
+          }
+        } catch (e) { log("door check failed", e.message); }
+        finally { m.doorBusy = false; }
+      }
       const side = N.depth.left > N.depth.right ? "left" : "right";
       say(`Stop. Something's ${N.depth.ahead.toFixed(1)} meters ahead. There's more room on your ${side}.`, { urgent: true });
       m.blockedCount = (m.blockedCount || 0) + 1;
-      if (m.blockedCount >= 3) { m.blockedCount = 0; lookAround(`blocked on the way to the ${m.target || m.via}`); }
-    } else m.blockedCount = 0;
+      if (m.blockedCount >= 3) {   // LiDAR phone: map this spot again (not the camera look-around, that's for phones without it)
+        m.blockedCount = 0; m.doorAsked = false;
+        const why = `blocked on the way to the ${m.target?.kind || m.target || m.via}`;
+        if (m.slam) { if (m.target?.x != null) m.visited.push({ x: m.target.x, z: m.target.z }); return slamMap(m, why); }
+        lookAround(why);
+      }
+    } else { m.blockedCount = 0; m.doorAsked = false; }
     return;
   }
   try {
@@ -1736,7 +1757,8 @@ async function doorStep(m) {
     m.handleInfo = d;
     if (["automatic", "revolving", "sliding"].includes(d.type)) { say(d.say); return doorWaitStart(m); }
     // hinged, or unsure (most doors are): find the handle first; say which side so the free hand can go there
-    say(`${d.say} Point the phone at the door, and I'll guide you to the handle.` +
+    const tooClose = !handSide(d) && N.depth && N.depth.ahead < 0.5;   // nose to the door, the handle is out of the picture
+    say(`${d.say} ${tooClose ? "Take a small step back, then point" : "Point"} the phone at the door, and I'll guide you to the handle.` +
         (d.type === "unsure" ? " If it slides instead, tell me." : ""));
     m.phase = "handle"; m.phaseAt = Date.now(); m.dxs = null; m.centered = false; m.lastDir = null; render();
   } catch (e) { log("door check failed", e); }
