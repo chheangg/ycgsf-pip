@@ -25,7 +25,11 @@ let overlay = null, current = null, placesArmed = null;
 // ---------- motion (the design's Motion + Gestures frame) ----------
 const reduced = () => matchMedia("(prefers-reduced-motion: reduce)").matches;   // Reduce Motion: animations stop
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-const vec3 = (hex) => { const h = hex.replace("#", ""); return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255); };
+// #RRGGBB as 0..1; a see-through #RRGGBBAA (the design's grays) as it looks over the page background
+const vec3 = (hex) => { const h = hex.replace("#", ""), c = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+  if (h.length < 8) return c;
+  const a = parseInt(h.slice(6, 8), 16) / 255, bg = vec3(css("--bg"));
+  return c.map((v, i) => v * a + bg[i] * (1 - a)); };
 const setPeriod = (e, s) => { if (!e) return; const cur = parseFloat(e.style.getPropertyValue("--pp")) || 0;   // pulse.glsl period 2/speed; --pp is half
   if (Math.abs(cur - s / 2) > cur * 0.1) e.style.setProperty("--pp", `${(s / 2).toFixed(2)}s`); };
 // Runs one of the design's fragment shaders (frontend/shaders.js = design/shaders/*.glsl) on a canvas, at 1 CSS px per pixel
@@ -52,6 +56,77 @@ function shader(canvas, name) {
     for (const [k, v] of Object.entries(uniforms)) Array.isArray(v) ? gl.uniform3fv(u(k), v) : gl.uniform1f(u(k), v);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   };
+}
+// Liquid glass: the design's shaders/liquid-glass.glsl on every control. It frosts and bends the backdrop and lights the rim.
+// Behind every control is the plain page background, so each look is drawn once per control size, into a CSS
+// variable (--g-clear, --g-pink...), and the CSS picks the look for each state. Tints are the design's.
+const GLASS_LOOKS = { clear: ["--fg", 0.08], pink: ["--accent", 0.82], work: ["--accent", 0.2], white: ["--fg", 0.9], chip: ["--accent", 0.12], send: ["--fg", 0.14] };
+const GLASS_SEL = [[".chip", ["chip"]], [".typebox button", ["send"]], [".typebox", ["clear"]], [".place .go", ["pink", "white"]],
+                   [".key, #talk, #deafen", ["clear", "pink", "work", "white"]]];
+const glassCache = new Map();
+let glassGL, glassShape = { id: "" };
+function glassContext() {
+  const c = document.createElement("canvas"), gl = c.getContext("webgl", { preserveDrawingBuffer: true });
+  if (!gl?.getExtension("OES_texture_float")) { log("glass: no WebGL float textures, plain colors instead"); return null; }
+  const mk = (type, src) => { const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh); return sh; };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, mk(gl.VERTEX_SHADER, "attribute vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }"));
+  gl.attachShader(prog, mk(gl.FRAGMENT_SHADER, SHADERS["liquid-glass"])); gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { log("glass shader failed:", gl.getProgramInfoLog(prog)); return null; }
+  gl.useProgram(prog);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, "p"); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  for (const [unit, name] of [[0, "u_bg"], [1, "u_sdf"]]) {
+    gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, gl.createTexture());
+    for (const k of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) gl.texParameteri(gl.TEXTURE_2D, k, gl.NEAREST);
+    for (const k of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T]) gl.texParameteri(gl.TEXTURE_2D, k, gl.CLAMP_TO_EDGE);
+    gl.uniform1i(gl.getUniformLocation(prog, name), unit);
+  }
+  return { c, gl, u: (k) => gl.getUniformLocation(prog, k) };
+}
+function glassImage(w, h, r, look) {
+  const dpr = devicePixelRatio || 1, W = Math.round(w * dpr), H = Math.round(h * dpr), shape = `${W}x${H}r${r}`;
+  if (glassCache.has(shape + look)) return glassCache.get(shape + look);
+  if (glassGL === undefined) glassGL = glassContext();
+  if (!glassGL) return null;
+  const { c, gl, u } = glassGL;
+  if (glassShape.id !== shape) {
+    // The shape, per pixel: how far in from the rounded edge (CSS px, the design's unit) and which way is in (y up,
+    // like gl_FragCoord). The looks of one control share it.
+    const sdf = new Float32Array(W * H * 4), hw = w / 2, hh = h / 2;
+    for (let j = 0, k = 0; j < H; j++) for (let i = 0; i < W; i++, k += 4) {
+      const px = (i + 0.5) / dpr - hw, py = (j + 0.5) / dpr - hh, qx = Math.abs(px) - (hw - r), qy = Math.abs(py) - (hh - r);
+      if (qx > 0 && qy > 0) { const L = Math.hypot(qx, qy); sdf[k] = r - L; sdf[k + 1] = -Math.sign(px) * qx / L; sdf[k + 2] = -Math.sign(py) * qy / L; }
+      else if (qx > qy) { sdf[k] = r - qx; sdf[k + 1] = -Math.sign(px); } else { sdf[k] = r - qy; sdf[k + 2] = -Math.sign(py); }
+    }
+    c.width = W; c.height = H; gl.viewport(0, 0, W, H);
+    gl.activeTexture(gl.TEXTURE1); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.FLOAT, sdf);
+    // The backdrop: the page background, one pixel (frosting or bending a flat color gives the same color).
+    gl.activeTexture(gl.TEXTURE0);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([...vec3(css("--bg")).map((v) => v * 255), 255]));
+    glassShape = { id: shape };
+  }
+  const [tint, amt] = GLASS_LOOKS[look];
+  gl.uniform2f(u("u_resolution"), W, H); gl.uniform3fv(u("u_tint"), vec3(css(tint))); gl.uniform1f(u("u_tintAmt"), amt);
+  for (const [k, v] of Object.entries({ u_bezel: 16, u_refract: 22, u_frost: 10, u_spec: 0.7, u_disp: 0.12, u_lightY: 1 })) gl.uniform1f(u(k), v);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  const url = `url(${c.toDataURL()})`;
+  glassCache.set(shape + look, url);
+  return url;
+}
+const glassLooks = (e) => GLASS_SEL.find(([sel]) => e.matches(sel))?.[1] || [];
+const glassSize = new ResizeObserver((entries) => {
+  for (const { target: e } of entries) {
+    const w = e.offsetWidth, h = e.offsetHeight, r = Math.min(parseFloat(getComputedStyle(e).borderTopLeftRadius) || 0, w / 2, h / 2);
+    if (!w || !h) continue;   // hidden: drawn when it shows
+    for (const look of glassLooks(e)) { const img = glassImage(w, h, r, look); if (img) e.style.setProperty(`--g-${look}`, img); }
+  }
+});
+const glassWatch = (root) => { for (const [sel] of GLASS_SEL) for (const e of root.querySelectorAll?.(sel) || []) glassSize.observe(e); };
+function initGlass() {
+  glassWatch(document);
+  new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) if (n.nodeType === 1) { glassWatch(n); if (glassLooks(n).length) glassSize.observe(n); } })
+    .observe(document.body, { childList: true, subtree: true });
 }
 const GL = {};
 function initShaders() {
@@ -190,14 +265,14 @@ function drawWave(t) {
   const g = c.getContext("2d"); if (!g) return;
   g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
   const sq = 6, gap = 2, cols = Math.floor((W + gap) / (sq + gap)), rows = 9, mid = 4, top = (H - rows * (sq + gap)) / 2;
-  const off = down || !talking;
+  const off = down || !talking, C = { leader: css("--leader"), accent: css("--accent"), bg: css("--bg"), line: css("--line") };
   const level = off ? 0 : Math.min(1, (NATIVE ? N.mic || 0 : micLevel) * 12);
   waveCols.push(level); while (waveCols.length > cols) waveCols.shift();
   for (let x = 0; x < cols; x++) {
     const v = waveCols[x - (cols - waveCols.length)] ?? 0, a = Math.round(v * mid);
     for (let y = 0; y < rows; y++) {
       const on = !off && Math.abs(y - mid) <= a && (a > 0 || y === mid);
-      g.fillStyle = on ? (a === 0 && x % 2 ? "#3A3934" : "#FF5CA8") : off && y === mid ? (x % 2 ? "#0A0A09" : "#6B685F") : "#3A3934";
+      g.fillStyle = on ? (a === 0 && x % 2 ? C.leader : C.accent) : off && y === mid ? (x % 2 ? C.bg : C.line) : C.leader;
       g.fillRect(x * (sq + gap), top + y * (sq + gap), sq, sq);
     }
   }
@@ -616,11 +691,12 @@ let waveAt = 0;
     if (current === "find" && GL["f-vf"]) GL["f-vf"](still ? 0 : t, { u_color: vec3(css("--accent")), u_grid: 25 });
     if (current === "search" && GL["s-vf"]) GL["s-vf"](still ? 0 : t, { u_color: vec3(css("--accent")), u_grid: 25 });
     if (current === "teach" && teachMap) drawMap(el("t-map"), teachMap);
-    for (const draw of sweeps.values()) draw(t, { u_base: vec3(css("--bg")), u_shine: vec3(css("--accent")), u_speed: 0.7 });
+    // black base: the canvas is screen-blended over the glass, so only the moving light shows (the design's Working key is glass)
+    for (const draw of sweeps.values()) draw(t, { u_base: [0, 0, 0], u_shine: vec3(css("--accent")), u_speed: 0.7 });
   } catch (e) { if (!frame.err) { frame.err = true; log("animation error:", e.message); } }
   requestAnimationFrame(frame);
 })(0);
-initShaders(); textSize(); tick();
+initShaders(); initGlass(); textSize(); tick();
 // One line at startup so a phone's log shows why animations might be missing (Reduce Motion stops them, per the design).
 log("screen:", "reduce motion", reduced() ? "ON (animations stopped)" : "off", "· shaders", ["cursor", "wave", "f-vf", "s-vf"].map((k) => `${k} ${GL[k] ? "ok" : "off"}`).join(", "));
 })();

@@ -33,7 +33,7 @@ struct PipWebView: UIViewRepresentable {
         #endif
         let web = PipWKWebView(frame: .zero, configuration: cfg)
         web.isOpaque = false
-        web.backgroundColor = UIColor(red: 10 / 255, green: 10 / 255, blue: 9 / 255, alpha: 1)   // design token bg #0A0A09
+        web.backgroundColor = UIColor(red: 7 / 255, green: 7 / 255, blue: 10 / 255, alpha: 1)   // design token bg #07070A
         web.scrollView.contentInsetAdjustmentBehavior = .never
         if #available(iOS 16.4, *) { web.isInspectable = true }   // Safari > Develop for debugging
         context.coordinator.web = web
@@ -360,7 +360,7 @@ private struct ScreenPreview: UIViewRepresentable {
         }
         let web = WKWebView(frame: .zero, configuration: cfg)
         web.isOpaque = false
-        web.backgroundColor = UIColor(red: 10 / 255, green: 10 / 255, blue: 9 / 255, alpha: 1)
+        web.backgroundColor = UIColor(red: 7 / 255, green: 7 / 255, blue: 10 / 255, alpha: 1)
         if let index = Bundle.main.url(forResource: "index", withExtension: "html", subdirectory: "frontend") {
             web.loadFileURL(index, allowingReadAccessTo: index.deletingLastPathComponent())
         }
@@ -372,7 +372,7 @@ private struct ScreenPreview: UIViewRepresentable {
 private struct Screen: View {   // full screen, page background color under the status bar too
     var js = ""
     var body: some View {
-        ScreenPreview(js: js).ignoresSafeArea(edges: .bottom).background(Color(red: 10 / 255, green: 10 / 255, blue: 9 / 255))
+        ScreenPreview(js: js).ignoresSafeArea(edges: .bottom).background(Color(red: 7 / 255, green: 7 / 255, blue: 10 / 255))
     }
 }
 

@@ -10,15 +10,18 @@
 <script src="shaders.js"></script>
 <style>
   @font-face { font-family: "JetBrains Mono"; src: url("fonts/JetBrainsMono.woff2") format("woff2"); font-weight: 100 800; font-display: block; }
+  @font-face { font-family: "Inter"; src: url("fonts/Inter.woff2") format("woff2"); font-weight: 100 900; font-display: block; }
   :root {
     color-scheme: dark;
-    --bg: #0A0A09; --fg: #ECE9E1; --dim: #A3A098; --line: #6B685F; --panel: #131311;
-    --accent: #FF5CA8; --ok: #FF5CA8; --bad: #FF5F56; --grid: #45433D;
+    --bg: #07070A; --fg: #FFFFFF; --dim: #EBEBF599; --line: #FFFFFF24; --panel: #FFFFFF12;
+    --accent: #FF5CA8; --ok: #FF5CA8; --bad: #FF453A; --grid: #00000000;
+    --glass-base: #FFFFFF12; --label-2: #EBEBF599; --label-3: #EBEBF54D;
     --leader: #3A3934; --ink: #0A0A09;
-    --font: "JetBrains Mono", ui-monospace, Menlo, monospace;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;   /* readouts, Pip's words, titles */
+    --font: "Inter", -apple-system, sans-serif;                  /* the glass controls: keys, Hold to talk, Deafen, chips */
   }
   * { box-sizing: border-box; margin: 0; }
-  html, body { background: var(--bg); color: var(--fg); font-family: var(--font); -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; }
+  html, body { background: var(--bg); color: var(--fg); font-family: var(--mono); -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; }
   body { min-height: 100dvh; overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
   button, input, select { font: inherit; color: inherit; }
   button { background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
@@ -66,35 +69,37 @@
   .oldline { position: absolute; pointer-events: none; }
   #wave { width: 100%; height: 96px; display: block; flex-shrink: 0; }
 
-  /* Pad: keys on a 1 px grid (component "Key"; states from the Button States frame) */
-  .pad { display: flex; flex-direction: column; gap: 1px; padding: 1px; background: var(--grid); width: 100%; flex-shrink: 0; }
-  .krow { display: flex; gap: 1px; }
+  /* Liquid glass (design: shaders/liquid-glass.glsl on every control). ui.js draws each look once per control size into
+     --g-<look>; CSS picks the look per state, so a press shows at once. Until drawn, the look's plain color shows. */
+  .key, #talk, #deafen, .chip, .place .go, .typebox, .typebox button {
+    background: var(--g-clear, none) center / 100% 100% no-repeat var(--glass-base); box-shadow: 0 6px 18px #00000052; font-family: var(--font); }
+  /* Pad: glass keys 10 px apart (component "Key"; states from the Button States frame) */
+  .pad { display: flex; flex-direction: column; gap: 10px; width: 100%; flex-shrink: 0; }
+  .krow { display: flex; gap: 10px; }
   .key { position: relative; flex: 1 1 0; min-width: 0; height: 104px; padding: 16px; display: flex; flex-direction: column; justify-content: space-between; align-items: flex-start;
-         background: var(--bg); color: var(--fg); overflow: hidden; }
+         border-radius: 26px; color: var(--fg); overflow: hidden; }
   .key > * { position: relative; }
-  .key b { font-size: 20px; font-weight: 700; letter-spacing: -0.4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .key b { font-size: 20px; font-weight: 600; letter-spacing: -0.4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
   .key.row { height: 64px; flex-direction: row; justify-content: flex-start; align-items: center; gap: 12px; padding: 0 16px; }
-  .key.wide { flex: none; width: 100%; height: 64px; flex-direction: row; justify-content: center; align-items: center; gap: 12px; padding: 0 16px; }
-  .key.wide .ic { width: 20px; height: 20px; } .key.wide b { font-size: 17px; letter-spacing: 1px; }
-  .key.light { background: var(--fg); color: var(--ink); }
-  .key.hot { background: var(--accent); color: var(--ink); }
-  .key.done { background: var(--fg); color: var(--ink); }          /* Done: white flash with a check for 0.6 s */
-  .key.work { color: var(--accent); }                              /* Working: says what Pip is doing; a pink light sweeps through */
-  .key canvas.sweep { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .key.wide { flex: none; width: 100%; height: 64px; flex-direction: row; justify-content: center; align-items: center; gap: 12px; padding: 0 16px; border-radius: 32px; }
+  .key.wide .ic { width: 20px; height: 20px; } .key.wide b { font-size: 17px; letter-spacing: -0.2px; }
+  .key.light, .key.done { background-image: var(--g-white, none); background-color: var(--fg); color: var(--ink); }   /* Done: white flash with a check for 0.6 s */
+  .key.hot, .key.pressed { background-image: var(--g-pink, none); background-color: var(--accent); color: var(--ink); }   /* Pressed: flips to pink the instant a finger lands */
+  .key.work { background-image: var(--g-work, none); color: var(--accent); }   /* Working: says what Pip is doing; a pink light sweeps through */
+  .key canvas.sweep { position: absolute; inset: 0; width: 100%; height: 100%; mix-blend-mode: screen; }   /* adds light on top of the glass */
   .key.na { opacity: .4; }                                         /* Unavailable: dimmed, says why */
-  .key.pressed { background: var(--accent); color: var(--ink); }   /* Pressed: flips to pink the instant a finger lands */
   /* Dock (Listening): Places · Setup */
-  .dock .key { height: 76px; padding: 14px; gap: 6px; flex-direction: column; justify-content: space-between; align-items: flex-start; }
+  .dock .key { height: 76px; padding: 16px; gap: 6px; flex-direction: column; justify-content: space-between; align-items: flex-start; }
   .dock .key .ic { width: 20px; height: 20px; }
-  .dock .key b { font-size: 15px; letter-spacing: 1px; }
+  .dock .key b { font-size: 15px; letter-spacing: -0.2px; }
   .krow.dock { display: grid; grid-template-columns: 1fr 1fr; }   /* equal cells (flex would widen the padded keys) */
   /* Voice Bar (components "Talk" / "Talk · On", "Deafen" / "Deafen · On"): one shared bar; ui.js moves it into the active screen */
-  #voicebar { display: flex; gap: 1px; }
-  #talk, #deafen { height: 64px; padding: 0 16px; display: flex; align-items: center; gap: 12px; background: var(--bg); color: var(--fg); }
+  #voicebar { display: flex; gap: 10px; }
+  #talk, #deafen { height: 64px; padding: 0 22px; display: flex; align-items: center; gap: 12px; border-radius: 32px; color: var(--fg); }
   #talk { flex: 1; min-width: 0; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }   /* held, not tapped */
   #talk .ic, #deafen .ic { width: 20px; height: 20px; }
-  #talk b, #deafen b { font-size: 17px; font-weight: 700; letter-spacing: 1px; }
-  #talk.on, #deafen.on, #deafen.pressed { background: var(--accent); color: var(--ink); }
+  #talk b, #deafen b { font-size: 17px; font-weight: 600; letter-spacing: -0.2px; }
+  #talk.on, #deafen.on, #deafen.pressed { background-image: var(--g-pink, none); background-color: var(--accent); color: var(--ink); }
 
   /* Readout: KEY ········ VALUE */
   .rows { display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; }
@@ -166,9 +171,9 @@
   .map { width: 100%; height: 170px; background: var(--panel); display: block; flex-shrink: 0; }
 
   /* Say Chip: what you can say */
-  .chip { display: inline-flex; align-items: center; gap: 10px; padding: 12px 16px; background: #FF5CA81A; outline: 1px solid #FF5CA866; outline-offset: -1px; max-width: 100%; }
+  .chip { display: inline-flex; align-items: center; gap: 10px; padding: 12px 16px; border-radius: 24px; background-image: var(--g-chip, none); max-width: 100%; }
   .chip .ic { width: 18px; height: 18px; color: var(--accent); }
-  .chip span { font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip span { font-size: 16px; font-weight: 500; letter-spacing: -0.2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   /* lists: setup, places, log */
   .hdr { display: flex; justify-content: space-between; align-items: flex-end; padding: 12px 0 8px; flex-shrink: 0; }
@@ -182,8 +187,8 @@
   .row > .ic { width: 18px; height: 18px; color: var(--dim); }
   .row input { background: none; border: 0; outline: 0; text-align: right; font-weight: 700; min-width: 0; flex: 1; }
   .row select { position: absolute; inset: 0; opacity: 0; width: 100%; }
-  .switch { width: 56px; height: 32px; padding: 4px; display: flex; justify-content: flex-start; background: var(--line); flex-shrink: 0; }
-  .switch i { width: 24px; height: 24px; background: var(--ink); }
+  .switch { width: 56px; height: 32px; padding: 4px; display: flex; justify-content: flex-start; background: var(--line); border-radius: 16px; flex-shrink: 0; }
+  .switch i { width: 30px; height: 24px; background: var(--fg); border-radius: 12px; }
   .switch.on { justify-content: flex-end; background: var(--accent); }
   .sect { display: flex; align-items: center; gap: 8px; padding: 14px 0 6px; font-size: 15px; flex-shrink: 0; }
   .sect span { color: var(--dim); letter-spacing: 2px; }
@@ -192,17 +197,18 @@
   .place .nm { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .place .nm b { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .place .nm span { color: var(--dim); font-size: 15px; letter-spacing: 1px; text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .place .go { height: 48px; padding: 0 16px; display: flex; align-items: center; justify-content: center; gap: 6px; background: var(--accent); color: var(--ink); flex-shrink: 0; }
-  .place .go b { font-size: 17px; font-weight: 800; }
+  .place .go { height: 48px; padding: 0 18px; display: flex; align-items: center; justify-content: center; gap: 6px; border-radius: 24px;
+               background-image: var(--g-pink, none); background-color: var(--accent); color: var(--ink); flex-shrink: 0; }
+  .place .go b { font-family: var(--mono); font-size: 17px; font-weight: 800; }
   .place .go .ic { width: 18px; height: 18px; }
-  .place .go.pressed { background: var(--fg); }
+  .place .go.pressed { background-image: var(--g-white, none); background-color: var(--fg); }
   .empty { color: var(--dim); font-size: 15px; padding: 14px 0; }
   .offscreen { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
-  .typebox { display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 8px 0 16px; outline: 1px solid var(--grid); outline-offset: -1px; flex-shrink: 0; }
-  .typebox input { flex: 1; min-width: 0; background: none; border: 0; outline: 0; font-size: 15px; font-weight: 500; color: var(--fg); -webkit-user-select: text; user-select: text; }
+  .typebox { display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 8px 0 20px; border-radius: 28px; flex-shrink: 0; }
+  .typebox input { flex: 1; min-width: 0; background: none; border: 0; outline: 0; font-family: var(--mono); font-size: 15px; font-weight: 500; color: var(--fg); -webkit-user-select: text; user-select: text; }
   .typebox input::placeholder { color: var(--dim); }
   .typebox > .ic { width: 20px; height: 20px; color: var(--dim); }
-  .typebox button { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; background: var(--panel); }
+  .typebox button { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 20px; background-image: var(--g-send, none); }
   .typebox button .ic { width: 18px; height: 18px; }
   .foot { color: var(--dim); font-size: 15px; flex-shrink: 0; }
   #log { flex: 1; min-height: 200px; overflow-y: auto; background: var(--panel); outline: 1px solid var(--line); outline-offset: -1px; padding: 14px;

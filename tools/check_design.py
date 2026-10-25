@@ -20,15 +20,16 @@ code = (html + "\n" + js).lower()
 problems = []
 
 # 1. Colors: every design color must be a CSS variable with the same value, e.g. --accent: #FF5CA8
-css_vars = {k.lower(): v.lower() for k, v in re.findall(r"--([a-z-]+)\s*:\s*(#[0-9a-fA-F]{3,8})", html)}
+css_vars = {k.lower(): v.lower() for k, v in re.findall(r"--([a-z0-9-]+)\s*:\s*(#[0-9a-fA-F]{3,8})", html)}
 for name, value in tokens["colors"].items():
     have = css_vars.get(name)
     if have != value.lower():
         problems.append(f"color --{name}: design {value}, code {have or 'missing'}")
 
-# 2. Font
-if tokens["font"].lower() not in html.lower():
-    problems.append(f"font: design uses {tokens['font']}, index.html never mentions it")
+# 2. Fonts: Inter for the glass controls, JetBrains Mono for the rest
+for key in ("font", "mono"):
+    if tokens[key].lower() not in html.lower():
+        problems.append(f"{key}: design uses {tokens[key]}, index.html never mentions it")
 
 # 3. Labels on each screen (case doesn't matter: the code may uppercase with CSS)
 for screen, s in tokens["screens"].items():

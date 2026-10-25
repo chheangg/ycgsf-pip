@@ -21,6 +21,6 @@ struct PipView: View {
     var body: some View {
         // The whole screen is the web page (frontend/index.html, built from the pen.dev design).
         PipWebView(sensors: sensors)
-            .background(Color(red: 10 / 255, green: 10 / 255, blue: 9 / 255))   // design token bg #0A0A09
+            .background(Color(red: 7 / 255, green: 7 / 255, blue: 10 / 255))   // design token bg #07070A
     }
 }
