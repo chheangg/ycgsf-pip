@@ -106,16 +106,19 @@
   .key.wide .ic { width: 20px; height: 20px; } .key.wide b { font-size: 17px; letter-spacing: 0; }
   .key.light, .key.done { background-color: var(--t-white, var(--fg)); color: var(--ink); }   /* Done: white flash with a check for 0.6 s */
   .key.hot { background-color: var(--t-pink, var(--accent)); color: var(--ink); }   /* Go, Resume */
-  /* Pressed: pink spreads from where the finger landed (--px, --py from ui.js) in 160 ms, and fades after release */
+  /* Pressed: pink spreads from where the finger landed (--px, --py from ui.js) in 160 ms, and fades after release.
+     The pink layer is the key's own rounded shape, and a growing circle clip reveals it; nothing is ever drawn
+     outside the key. (A bigger circle clipped by the key's overflow leaked past the rounded corners on the iPhone.)
+     150%: circle() percentages are of the box diagonal / √2, so 142% covers the key even from a corner. */
   .key.pressed { color: var(--ink); }
-  .key::before { content: ""; position: absolute; left: var(--px, 50%); top: var(--py, 50%); width: 440px; height: 440px; margin: -220px 0 0 -220px; border-radius: 50%;
-    background: var(--t-pink, var(--accent)); pointer-events: none; transform: scale(0); opacity: 0; transition: opacity 200ms ease-out, transform 0s 200ms; }
-  .key.pressed::before { transform: none; opacity: 1; transition: transform 160ms ease-out, opacity 0s; }
+  .key::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--t-pink, var(--accent)); pointer-events: none;
+    clip-path: circle(0 at var(--px, 50%) var(--py, 50%)); opacity: 0; transition: opacity 200ms ease-out, clip-path 0s 200ms; }
+  .key.pressed::before { clip-path: circle(150% at var(--px, 50%) var(--py, 50%)); opacity: 1; transition: clip-path 160ms ease-out, opacity 0s; }
   /* Done: the check draws itself left to right (the label rolls in, ui.js) */
   .key.done .ic { animation: reveal 240ms ease-out both; }
   @keyframes reveal { from { clip-path: inset(0 100% 0 0); } }
   .key.work { background-color: var(--t-work, var(--glass-base)); color: var(--accent); }   /* Working: says what Pip is doing; a pink light sweeps through */
-  .key canvas.sweep { position: absolute; inset: 0; width: 100%; height: 100%; mix-blend-mode: screen; }   /* adds light on top of the glass */
+  .key canvas.sweep { position: absolute; inset: 0; border-radius: inherit; width: 100%; height: 100%; mix-blend-mode: screen; }   /* adds light on top of the glass */
   .key.na { opacity: .4; }                                         /* Unavailable: dimmed, says why */
   /* Dock (Listening): Places · Setup */
   .dock .key { height: 76px; padding: 16px; gap: 6px; flex-direction: column; justify-content: space-between; align-items: flex-start; }

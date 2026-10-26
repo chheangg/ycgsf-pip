@@ -72,6 +72,19 @@ for p, src in [*js.items(), *swift.items()]:
         elif code_line.match(line):
             problems.append(f"{p.relative_to(root)}:{i}: commented-out code (delete it; git keeps the history)")
 
+# 6. Effects drawn inside a control (pseudo-elements, canvases) must keep to the control's own rounded shape.
+# iPhone Safari doesn't always clip an animated child at the parent's rounded corners, so anything bigger than
+# the control (a fixed-size circle, a negative margin) can show outside it. Rule: inset: 0 + border-radius: inherit.
+control = r"(?:\.key|#talk|#deafen|\.chip|\.go|\.typebox)[\w.#-]*"
+for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", html):
+    sel, body = m.group(1), m.group(2)
+    if not re.search(control + r"(?:::before|::after|\s+canvas)", sel) or "position: absolute" not in body:
+        continue
+    line = html.count("\n", 0, m.start(2)) + 1
+    if "inset: 0" not in body or "border-radius: inherit" not in body or re.search(r"\b(width|height):\s*\d+px|margin:\s*-", body):
+        problems.append(f"frontend/index.html:{line}: an effect inside a control must use 'inset: 0; border-radius: inherit' "
+                        "and no fixed size, or it can show outside the control on the iPhone")
+
 if problems:
     print(f"Code check: {len(problems)} thing(s) to clean up")
     for p in problems:
