@@ -2495,6 +2495,22 @@ async function demoRecord() {   // ReplayKit on the phone: the screen and Pip's 
   log(on ? "recording started" : "recording saved to Photos");
   if (!on) say("Saved the recording to Photos.");
 }
+const PATH_X = [0.3, 0.7], PATH_LOW = 0.7;   // middle 40% across; bottom edge in the lowest 30% of the picture
+const OBSTACLE_LABELS = /person|bicycle|car|motorcycle|bus|truck|fire hydrant|stop sign|parking meter|bench|chair|potted plant|suitcase|dog|trash|sign/i;
+const LOW_SCAN_MS = 1000, LOW_THINGS = "bollard,pole,post,fire hydrant,trash can,sign post,planter";   // not in the detector's 80 classes
+async function lowScan(blob) {   // the open-vocabulary detector, once a second, for posts and bollards in your path
+  S.lowScanAt = Date.now();
+  try {
+    const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("labels", LOW_THINGS);
+    const r = await (await fetch(SERVER + "/scan", { method: "POST", body: fd, signal: AbortSignal.timeout(4000) })).json();
+    const [label, h] = Object.entries(r.hits || {}).filter(([, x]) => x.score >= 0.2 && Math.abs(x.dx) < 0.2 && x.dy > 0.05).sort((a, b) => b[1].score - a[1].score)[0] || [];
+    if (!label || !guiding() || Date.now() - hazardSaidAt < 5000) return;
+    hazardSaidAt = Date.now(); obstacleSeen(label);
+    const d = N.depth, side = d ? (d.left >= d.right ? "left" : "right") : h.dx < 0 ? "right" : "left";
+    log("low obstacle:", label, h.score, `dx ${h.dx} dy ${h.dy}`);
+    say(`Careful, ${label} ahead. Step ${side}.`, { urgent: true });
+  } catch (e) { log("low scan failed", e.message); }
+}
 function ensureCamera() {
   if (!camOn) camOn = (NATIVE ? Promise.resolve() : startCamera()).then(() => { S.camFail = null; return localLoop(); }).catch((e) => { log("camera:", e.message); camOn = null; S.camFail = e.message; });   // LOOK and FIND show "No camera"
   return camOn;
@@ -2545,7 +2561,12 @@ async function localLoop() {
         S.clear = r.clear; S.hint = guiding() ? r.hint : "clear"; S.hazards = r.hazards;
         S.demoBoxes = { boxes: r.boxes || [], at: Date.now() };
         if (S.seg) S.seg.landmarks.push(...r.landmarks);
-        const near = r.hazards.find((h) => h.near && h.side === "ahead");
+        // In your path = box centered ahead with its bottom in the lower part of the picture (~2-3 m off), so low things
+        // like a hydrant get a warning before they drop out of LiDAR's middle band (trip 17:0x: boxed, then walked into).
+        const inPath = (b) => { const cx = (b.box[0] + b.box[2]) / 2; return cx > PATH_X[0] && cx < PATH_X[1] && b.box[3] > PATH_LOW && b.conf >= 0.35; };
+        const pathBox = (r.boxes || []).find((b) => OBSTACLE_LABELS.test(b.label) && inPath(b));
+        const near = pathBox ? { label: pathBox.label } : r.hazards.find((h) => h.near && h.side === "ahead");
+        if (!near && guiding() && Date.now() - (S.lowScanAt || 0) > LOW_SCAN_MS) lowScan(blob);
         // Trip 17:0x: the detector boxed a fire hydrant and the user still walked into it: on the phone only LiDAR
         // warned, and a low hydrant drops out of LiDAR's middle band as you get close. The detector speaks too now.
         if (near && guiding() && !S.learning && Date.now() - hazardSaidAt > 5000) {
