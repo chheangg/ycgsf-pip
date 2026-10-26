@@ -24,6 +24,9 @@ struct PipWebView: UIViewRepresentable {
         cfg.userContentController.add(context.coordinator, name: "pip")
         // Tell the page it's running inside the app, before any of its scripts run.
         cfg.userContentController.addUserScript(WKUserScript(source: "window.PIP_NATIVE = true;", injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        let deviceID = UserDefaults.standard.string(forKey: "pip.indoor.device") ?? UUID().uuidString
+        UserDefaults.standard.set(deviceID, forKey: "pip.indoor.device")
+        cfg.userContentController.addUserScript(WKUserScript(source: "window.PIP_DEVICE_ID = '\(deviceID)';", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         #if DEBUG
         // Screen testing in the Simulator (debug builds only): launch with SIMCTL_CHILD_PIP_DEMO_JS="<js>" to run
         // that script after the page loads, e.g. to open a screen without walking anywhere.
@@ -53,6 +56,7 @@ struct PipWebView: UIViewRepresentable {
         private var uploadTimer: Timer?
         private var server = "http://100.71.218.127:8100"
         private var tick = 0
+        private let recorder = Recorder()
 
         init(sensors: Sensors) {
             self.sensors = sensors
@@ -108,6 +112,17 @@ struct PipWebView: UIViewRepresentable {
                     let json = pts.map { "[" + $0.map { "{\"x\":\($0.x),\"z\":\($0.y)}" }.joined(separator: ",") + "]" } ?? "null"
                     DispatchQueue.main.async { self.js("window.pipNative && window.pipNative.pinned(\(id), \(json))") }
                 }
+            case "cloud":   // the demo's 3D view: LiDAR points [x, y, z, ...] in meters (empty without LiDAR)
+                let id = body["id"] as? Int ?? 0
+                let pts = sensors.useAR ? sensors.ar.cloud() : []
+                let json = "[" + pts.map { String(format: "%.2f", $0) }.joined(separator: ",") + "]"
+                js("window.pipNative && window.pipNative.pinned(\(id), \(json))")
+            case "record":  // demo recording of the screen and app sound, saved to Photos -> {ok, error?}
+                let id = body["id"] as? Int ?? 0, on = body["on"] as? Bool ?? false
+                let reply: (String?) -> Void = { err in
+                    self.js("window.pipNative && window.pipNative.pinned(\(id), {ok: \(err == nil), error: \(err.map { "'\($0.replacingOccurrences(of: "'", with: " "))'" } ?? "null")})")
+                }
+                on ? recorder.start(reply) : recorder.stop(reply)
             case "read":
                 // Signs and labels in view (Apple Vision on the phone): [{text, conf, u, v, h, bearing, x?, z?, d?}]
                 let id = body["id"] as? Int ?? 0
@@ -115,6 +130,36 @@ struct PipWebView: UIViewRepresentable {
                 sensors.ar.readText { lines in
                     let json = (try? JSONSerialization.data(withJSONObject: lines)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
                     DispatchQueue.main.async { self.js("window.pipNative && window.pipNative.pinned(\(id), \(json))") }
+                }
+            case "indoorObservation":
+                let id = body["id"] as? Int ?? 0
+                guard sensors.useAR else { js("window.pipNative.pinned(\(id), null)"); break }
+                sensors.ar.indoorObservation { result in
+                    let json = result.flatMap { try? JSONSerialization.data(withJSONObject: $0) }
+                        .flatMap { String(data: $0, encoding: .utf8) } ?? "null"
+                    DispatchQueue.main.async { self.js("window.pipNative.pinned(\(id), \(json))") }
+                }
+            case "indoorPath":
+                let id = body["id"] as? Int ?? 0
+                guard sensors.useAR, sensors.ar.tracking == "ok", let p = sensors.ar.pose,
+                      let frame = body["frame_id"] as? String, frame == sensors.ar.frameId,
+                      let x = body["x"] as? Double, let z = body["z"] as? Double,
+                      x.isFinite, z.isFinite else { js("window.pipNative.pinned(\(id), null)"); break }
+                let map = sensors.ar.map
+                let approach = body["approach"] as? Bool ?? false
+                let viewpoint = body["viewpoint"] as? Bool ?? false
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let from = SIMD2(p.x, p.z), target = SIMD2(Float(x), Float(z))
+                    let points = approach ? map.approach(from: from, to: target, viewpoint: viewpoint) : map.path(from: from, to: target, strict: true)
+                    let payload: [[String: Double]]? = points.map { $0.map { ["x": Double($0.x), "z": Double($0.y)] } }
+                    let json = payload.flatMap { try? JSONSerialization.data(withJSONObject: $0) }
+                        .flatMap { String(data: $0, encoding: .utf8) } ?? "null"
+                    DispatchQueue.main.async {
+                        guard self.sensors.ar.frameId == frame, self.sensors.ar.tracking == "ok" else {
+                            self.js("window.pipNative.pinned(\(id), null)"); return
+                        }
+                        self.js("window.pipNative.pinned(\(id), \(json))")
+                    }
                 }
             case "gps":
                 sensors.startGPS()
@@ -131,9 +176,10 @@ struct PipWebView: UIViewRepresentable {
                 req.source = MKMapItem(placemark: MKPlacemark(coordinate: CLLocationCoordinate2D(latitude: fLat, longitude: fLon)))
                 req.destination = MKMapItem(placemark: MKPlacemark(coordinate: CLLocationCoordinate2D(latitude: tLat, longitude: tLon)))
                 req.transportType = .walking
+                req.requestsAlternateRoutes = true   // a blocked path (gate, hedge) needs another way, not the same route again
                 MKDirections(request: req).calculate { resp, err in
                     var out: [String: Any] = ["error": err?.localizedDescription ?? "no walking route"]
-                    if let r = resp?.routes.first {
+                    let routes: [[String: Any]] = (resp?.routes ?? []).map { r in
                         let n = r.polyline.pointCount
                         var coords = [CLLocationCoordinate2D](repeating: kCLLocationCoordinate2DInvalid, count: n)
                         r.polyline.getCoordinates(&coords, range: NSRange(location: 0, length: n))
@@ -142,9 +188,10 @@ struct PipWebView: UIViewRepresentable {
                             let c = s.polyline.points()[0].coordinate
                             return ["text": s.instructions, "m": s.distance, "lat": c.latitude, "lon": c.longitude]
                         }
-                        out = ["meters": r.distance, "seconds": r.expectedTravelTime,
-                               "points": coords.map { [$0.latitude, $0.longitude] }, "steps": steps]
+                        return ["meters": r.distance, "seconds": r.expectedTravelTime,
+                                "points": coords.map { [$0.latitude, $0.longitude] }, "steps": steps]
                     }
+                    if var first = routes.first { first["routes"] = routes; out = first }
                     let json = (try? JSONSerialization.data(withJSONObject: out)).flatMap { String(data: $0, encoding: .utf8) } ?? "null"
                     DispatchQueue.main.async { self.js("window.pipNative && window.pipNative.pinned(\(id), \(json))") }
                 }

@@ -22,6 +22,8 @@ graphify-out/cost.json
 graphify-out/manifest.json
 # Trip recordings copied off the phone (large, personal)
 trips/
+# Persistent shared indoor section library (preserved across deployments)
+data/
 
 # Raw hackathon emails and messages (personal addresses; the repo is public)
 docs/hackathon/raw/

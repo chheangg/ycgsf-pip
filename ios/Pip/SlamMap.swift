@@ -156,23 +156,26 @@ final class SlamMap {
 
     /// A* from `a` to `b` on the floor plane, staying ~20 cm from obstacles (10 cm if that finds no way); unknown
     /// space allowed but costlier; where you already walked is always passable. Returns waypoints (meters), or nil.
-    func path(from a: SIMD2<Float>, to b: SIMD2<Float>) -> [SIMD2<Float>]? {
-        path(from: a, to: b, pad: 2) ?? path(from: a, to: b, pad: 1)
+    func path(from a: SIMD2<Float>, to b: SIMD2<Float>, strict: Bool = false) -> [SIMD2<Float>]? {
+        if strict { return path(from: a, to: b, pad: 2, strict: true) }
+        return path(from: a, to: b, pad: 2) ?? path(from: a, to: b, pad: 1)
     }
 
-    private func path(from a: SIMD2<Float>, to b: SIMD2<Float>, pad: Int) -> [SIMD2<Float>]? {
+    private func path(from a: SIMD2<Float>, to b: SIMD2<Float>, pad: Int, strict: Bool = false) -> [SIMD2<Float>]? {
         lock.lock(); let c = cells; let walkedNow = walked; lock.unlock()
         let n = Self.n
         guard let s = idx(a.x, a.y), let g = idx(b.x, b.y) else { return nil }
-        var blocked = [Bool](repeating: false, count: n * n)   // obstacles, padded by `pad` cells
+        var blocked = c.map { strict && $0 != Cell.free.rawValue }
         for k in 0..<(n * n) where c[k] == Cell.occupied.rawValue {
             let i = k % n, j = k / n
             for dj in -pad...pad { for di in -pad...pad where di * di + dj * dj <= pad * pad {
                 let ii = i + di, jj = j + dj
-                if ii >= 0 && ii < n && jj >= 0 && jj < n && !walkedNow[jj * n + ii] { blocked[jj * n + ii] = true }
+                if ii >= 0 && ii < n && jj >= 0 && jj < n && (strict || !walkedNow[jj * n + ii]) { blocked[jj * n + ii] = true }
             } }
         }
-        blocked[s] = false; blocked[g] = false
+        if strict {
+            guard !blocked[s], !blocked[g] else { return nil }
+        } else { blocked[s] = false; blocked[g] = false }
         var gScore = [Float](repeating: .infinity, count: n * n)
         var came = [Int](repeating: -1, count: n * n)
         var open: [(f: Float, k: Int)] = [(0, s)]
@@ -191,6 +194,7 @@ final class SlamMap {
                 guard ii >= 0 && ii < n && jj >= 0 && jj < n else { continue }
                 let nb = jj * n + ii
                 guard !blocked[nb] else { continue }
+                if strict && di != 0 && dj != 0 && (blocked[cj * n + ii] || blocked[jj * n + ci]) { continue }
                 let penalty: Float = c[nb] == Cell.unknown.rawValue ? 3 : 1
                 let t = gScore[cur] + cost * penalty
                 if t < gScore[nb] { gScore[nb] = t; came[nb] = cur; open.append((t + hgt(nb), nb)) }
@@ -200,11 +204,32 @@ final class SlamMap {
         var cells: [Int] = [g]
         while let last = cells.last, last != s, came[last] != -1 { cells.append(came[last]) }
         let pts = cells.reversed().map(world)
+        if strict { return pts }
         // keep a waypoint every ~0.6 m
         var out: [SIMD2<Float>] = []
         for p in pts where out.last.map({ simd_distance($0, p) >= 0.6 }) ?? true { out.append(p) }
         if let last = pts.last, out.last != last { out.append(last) }
         return out
+    }
+
+    /// Stop on known free floor near the sign; its surface is never the walking destination.
+    func approach(from a: SIMD2<Float>, to b: SIMD2<Float>, viewpoint: Bool) -> [SIMD2<Float>]? {
+        guard idx(b.x, b.y) != nil else { return nil }
+        var candidates: [SIMD2<Float>] = viewpoint ? [b] : []
+        for radius in [Float(0.7), 1.0, 1.3] {
+            for i in 0..<16 {
+                let angle = Float(i) * .pi / 8
+                candidates.append(b + SIMD2(cos(angle), sin(angle)) * radius)
+            }
+        }
+        lock.lock()
+        candidates = candidates.filter { p in idx(p.x, p.y).map { cells[$0] == Cell.free.rawValue } ?? false }
+        lock.unlock()
+        candidates.sort { simd_distance(a, $0) < simd_distance(a, $1) }
+        for p in candidates.prefix(12) {
+            if let route = path(from: a, to: p, strict: true) { return route }
+        }
+        return nil
     }
 
     var knownCells: Int { lock.lock(); defer { lock.unlock() }; return cells.reduce(0) { $0 + ($1 == 0 ? 0 : 1) } }

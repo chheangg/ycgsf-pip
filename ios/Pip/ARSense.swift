@@ -68,7 +68,7 @@ final class ARSense: NSObject, ARSessionDelegate {
     /// Start fresh (new coordinate frame), e.g. after a saved room could not be recognized.
     func restart() {
         map.reset()
-        lock.lock(); _frameId = UUID().uuidString; pendingFrame = nil; lock.unlock()
+        lock.lock(); _frameId = UUID().uuidString; pendingFrame = nil; lastFrame = nil; _pose = nil; _tracking = "starting"; lock.unlock()
         session.run(config(), options: [.resetTracking, .removeExistingAnchors])
     }
 
@@ -80,7 +80,7 @@ final class ARSense: NSObject, ARSessionDelegate {
         let cfg = config()
         cfg.initialWorldMap = worldMap
         map.reset()                                           // the old floor map is in the old coordinates
-        lock.lock(); _frameId = "relocalizing"; pendingFrame = frame; pendingSawLimited = false; lock.unlock()
+        lock.lock(); _frameId = "relocalizing"; pendingFrame = frame; pendingSawLimited = false; lastFrame = nil; _pose = nil; _tracking = "relocalizing"; lock.unlock()
         session.run(cfg, options: [.resetTracking, .removeExistingAnchors])
         return true
     }
@@ -141,6 +141,33 @@ final class ARSense: NSObject, ARSessionDelegate {
         img = img.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         return ci.jpegRepresentation(of: img, colorSpace: CGColorSpaceCreateDeviceRGB(),
                                      options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.7])
+    }
+
+    /// The LiDAR depth as a point cloud for the demo's 3D view: a grid of up to ~1200 points from the latest frame,
+    /// in meters from the phone, portrait axes (x right, y up, z ahead).
+    func cloud() -> [Float] {
+        lock.lock(); let latest = lastFrame; lock.unlock()
+        guard let frame = latest, let sd = frame.smoothedSceneDepth ?? frame.sceneDepth else { return [] }
+        let map = sd.depthMap
+        CVPixelBufferLockBaseAddress(map, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(map, .readOnly) }
+        let w = CVPixelBufferGetWidth(map), h = CVPixelBufferGetHeight(map), row = CVPixelBufferGetBytesPerRow(map)
+        guard let base = CVPixelBufferGetBaseAddress(map) else { return [] }
+        let res = frame.camera.imageResolution, K = frame.camera.intrinsics
+        let sx = Float(w) / Float(res.width), sy = Float(h) / Float(res.height)
+        let fx = K[0][0] * sx, fy = K[1][1] * sy, cx = K[2][0] * sx, cy = K[2][1] * sy
+        var out: [Float] = []
+        out.reserveCapacity(3600)
+        for v in stride(from: 0, to: h, by: max(1, h / 30)) {
+            let p = base.advanced(by: v * row).assumingMemoryBound(to: Float32.self)
+            for u in stride(from: 0, to: w, by: max(1, w / 40)) {
+                let d = p[u]
+                guard d.isFinite, d > 0.1, d < 6 else { continue }
+                // sensor x runs portrait top->bottom, sensor y portrait right->left (see sectors below)
+                out += [-(Float(v) - cy) * d / fy, -(Float(u) - cx) * d / fx, d]
+            }
+        }
+        return out
     }
 
     /// Nearest distance (meters) in the portrait left / center / right thirds of the middle band.
@@ -208,22 +235,46 @@ final class ARSense: NSObject, ARSessionDelegate {
         lock.lock(); let frame = lastFrame; lock.unlock()
         guard let frame else { return done([]) }
         DispatchQueue.global(qos: .userInitiated).async {
+            done(self.recognizeText(frame))
+        }
+    }
+
+    private func recognizeText(_ frame: ARFrame) -> [[String: Any]] {
             let req = VNRecognizeTextRequest()
             req.recognitionLevel = .accurate
             req.usesLanguageCorrection = true
             req.minimumTextHeight = 0.012
-            try? VNImageRequestHandler(cvPixelBuffer: frame.capturedImage, orientation: .right).perform([req])
+            do { try VNImageRequestHandler(cvPixelBuffer: frame.capturedImage, orientation: .right).perform([req]) }
+            catch { NSLog("Pip OCR failed: %@", String(describing: error)); return [] }
             var out: [[String: Any]] = []
             for o in req.results ?? [] {
                 guard let c = o.topCandidates(1).first, c.confidence >= 0.4 else { continue }
                 let b = o.boundingBox                               // portrait, normalized, origin bottom-left
                 let u = Float(b.midX), v = Float(1 - b.midY)
                 var e: [String: Any] = ["text": c.string, "conf": Double(c.confidence), "u": Double(u), "v": Double(v),
-                                        "h": Double(b.height), "bearing": Double(self.rayHeading(u: u, v: v, frame: frame))]
+                                        "w": Double(b.width), "h": Double(b.height), "bearing": Double(self.rayHeading(u: u, v: v, frame: frame))]
                 if let p = self.pin(u: u, v: v, frame: frame) { e["x"] = Double(p.x); e["z"] = Double(p.z); e["d"] = Double(p.distance) }
                 out.append(e)
             }
-            done(out)
+            return Array(out.prefix(64))
+    }
+
+    /// The image, OCR and projection all refer to this retained frame, even if the phone turns during OCR.
+    func indoorObservation(done: @escaping ([String: Any]?) -> Void) {
+        lock.lock(); let frame = lastFrame, coordinateFrame = _frameId; lock.unlock()
+        guard let frame, ProcessInfo.processInfo.systemUptime - frame.timestamp < 2 else { return done(nil) }
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let jpeg = self.encode(frame.capturedImage) else { return done(nil) }
+            let t = frame.camera.transform
+            let f = -SIMD3<Float>(t.columns.2.x, t.columns.2.y, t.columns.2.z)
+            let heading = (atan2(f.x, -f.z) * 180 / .pi + 360).truncatingRemainder(dividingBy: 360)
+            let tracking: String
+            if case .normal = frame.camera.trackingState { tracking = "ok" } else { tracking = "limited" }
+            let capturedAt = Date().timeIntervalSince1970 - (ProcessInfo.processInfo.systemUptime - frame.timestamp)
+            done(["observation_id": UUID().uuidString, "captured_at": capturedAt,
+                  "frame_id": coordinateFrame, "tracking": tracking, "image": jpeg.base64EncodedString(),
+                  "pose": ["x": Double(t.columns.3.x), "z": Double(t.columns.3.z), "heading": Double(heading)],
+                  "lines": self.recognizeText(frame)])
         }
     }
 }

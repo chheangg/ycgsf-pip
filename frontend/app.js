@@ -19,6 +19,7 @@ const askNative = (msg, ms = 1500) => new Promise((res) => { const id = ++native
 const N = { heading: null, compass: null, frame: null, mapping: "none", pose: null, depth: null, distance: 0, camera: "", doors: [], frontiers: [], mapped: 0 };   // phone sensors
 window.pipNative = {
   update(snap) {
+    N.updatedAt = Date.now();
     N.mic = snap.mic || 0;
     N.heading = snap.heading; N.pose = snap.pose || null; N.depth = snap.depth || null; N.distance = snap.distance_m || 0; N.camera = snap.camera;
     if (snap.doors) { N.doors = snap.doors; N.frontiers = snap.frontiers || []; N.mapped = snap.mapped_m2 || 0; }
@@ -482,6 +483,7 @@ function learnCancel() {   // STOP while teaching: nothing is saved
   say("Stopped. I didn't save the route.");
 }
 function stopAll() {   // the STOP key
+  indoorCancel();
   S.find = null; S.route = null; S.back = null; S.mission = null; S.walk = null; S.walkTok = null; S.preview = null; S.paused = false; S.orient = null; S.trip = null;
   say("Stopped."); render();
 }
@@ -685,6 +687,7 @@ function currentDirection() {   // answer "where do I go now?" from the route, n
     st.action === "turn_around" ? "Turn around." : st.action === "left" || st.action === "right" ? `Turn ${st.action}.` : "You should be there.";
 }
 function walkCue() {   // runs every screen frame; the phone's position updates 10x a second
+  if (S.walk.indoor) return indoorWalkCue(S.walk);
   const w = S.walk, p = w.pts[w.i], last = w.i === w.pts.length - 1, l = locate(p), now = Date.now();
   w.l = l;   // for the screen
   const around = N.pose ? blockedStep(w) : undefined; if (around !== undefined) return around;
@@ -799,6 +802,38 @@ async function looksOutside() {   // one camera frame: is this outdoors (not a r
     return room === "outside" || (room === "unknown" && gpsGood(15));
   } catch (e) { log("outside check failed", e.message); return false; }
 }
+// ---------- blocked spots: a confirmed gate or hedge on the route, so a new route goes around it ----------
+// Trip 15:58: blocked at a gate, then Apple Maps' new route went the same way into another wall. A spot counts as
+// blocked only when LiDAR and the camera agree; routes passing within 20 m of one are skipped (GPS error here was
+// 5-14 m). Apple Maps gives alternate routes; if all pass it, try going via a point 60 m to either side of it.
+const AVOID_M = 20, VIA_M = 60, BLOCK_KEEP_MS = 30 * 60000;   // a shut gate stays shut for a while; forget after 30 min
+const liveBlocks = () => (S.blocks || []).filter((b) => Date.now() - b.t < BLOCK_KEEP_MS);
+function addBlock(what) {   // the spot just ahead of you (LiDAR saw it within ~2 m; GPS puts you within ~10 m)
+  if (!S.fix || compassNow() == null) return;
+  const b = { ...move(S.fix, compassNow(), 3), t: Date.now(), what };
+  (S.blocks ||= []).push(b);
+  log("blocked spot:", what, b.lat.toFixed(6), b.lon.toFixed(6));
+}
+function routeHitsBlock(points) {
+  const bs = liveBlocks(); if (!bs.length || points.length < 2) return false;
+  const o = { lat: points[0][0], lon: points[0][1] }, P = points.map(([lat, lon]) => toLocal(o, { lat, lon }));
+  return bs.some((b) => { const c = toLocal(o, b); return P.some((p, i) => i > 0 && segDist(c, P[i - 1], p) < AVOID_M); });
+}
+async function routeAvoiding(here, to) {   // -> {route, via, all}: the first Apple Maps route clear of blocked spots
+  const d = await askNative({ type: "directions", from: here, to }, 15000);
+  const routes = d?.routes || (d?.points ? [d] : []);
+  const clear = routes.find((r) => r.points?.length > 1 && !routeHitsBlock(r.points));
+  if (clear || !routes.length) return { route: clear || null, all: routes.length };
+  const b = liveBlocks().at(-1), toBlock = bearing(here, b);
+  for (const side of [-90, 90]) {   // around it: via a point beside the block, then on to the place
+    const v = move(b, (toBlock + side + 360) % 360, VIA_M);
+    const [a1, a2] = await Promise.all([askNative({ type: "directions", from: here, to: v }, 15000), askNative({ type: "directions", from: v, to }, 15000)]);
+    if (!(a1?.points?.length > 1 && a2?.points?.length > 1)) continue;
+    const points = [...a1.points, ...a2.points.slice(1)];
+    if (!routeHitsBlock(points)) return { route: { points, steps: [...(a1.steps || []), ...(a2.steps || [])], seconds: (a1.seconds || 0) + (a2.seconds || 0) }, via: true, all: routes.length };
+  }
+  return { route: null, all: routes.length };
+}
 // go: they already said yes (coming out of a building): start right away instead of asking again.
 async function gpsWalk(name, to, serverSteps, entrance = true, { go = false, placeId = null, where = "" } = {}) {   // where: ", on Library Walk"   // entrance: at the end, find the door with the camera
   ensureGPS(); ensureCamera();
@@ -817,11 +852,15 @@ async function gpsWalk(name, to, serverSteps, entrance = true, { go = false, pla
   const here = { lat: S.fix.lat, lon: S.fix.lon };
   let path = null, secs = null;
   if (NATIVE) {
-    const d = await askNative({ type: "directions", from: here, to }, 15000);
+    const { route: d, via, all } = await routeAvoiding(here, to);
     if (d?.points?.length > 1) {
       path = buildPath(d.points.map(([lat, lon]) => ({ lat, lon })), d.steps); secs = d.seconds;
-      log("apple maps route", name, Math.round(path.total), "m", d.points.length, "shape points,", path.man.length, "turns");
-    } else log("apple maps route failed", d?.error || "no answer");
+      log("apple maps route", name, Math.round(path.total), "m", d.points.length, "shape points,", path.man.length, "turns",
+          via ? "(around a blocked spot)" : all > 1 ? `(of ${all} routes)` : "");
+    } else if (all && liveBlocks().length) {
+      log("every route goes through a blocked spot");
+      return say("Every way I can find goes through the blocked spot. Is there a way through it, like a door in the gate? Or ask someone nearby.");
+    } else log("apple maps route failed", "no answer");
   }
   if (!path && serverSteps?.length) {   // fallback: the server's corner points, joined by straight lines
     const pts = [here, ...serverSteps.map((st) => ({ lat: st.lat, lon: st.lon }))];
@@ -949,17 +988,23 @@ async function aroundCheck(w, said = false) {
     }
     if (S.walk !== w || !dd) return;
     if (said && dd.ahead >= BLOCKED_M && !what) return say("I don't see anything right in front of you. Try a step forward slowly, I'll warn you.");
-    w.blocks = (w.blocks || 0) + 1;
+    w.blocks = (w.blocks || 0) + 1; obstacleSeen(what);
     const name = what ? `There's a ${what} ahead` : dd.left < 1.5 && dd.right < 1.5 ? "There's a wall ahead" : "Something's in the way";
     const goal = w.blocks < 3 ? routeAhead(w) : null;
     const pts = goal ? await askNative({ type: "path", x: goal.x, z: goal.z }) : null;   // A* on the live map, around what LiDAR has seen
     log("blocked ahead:", dd.ahead.toFixed(1), "m", what || "(unnamed)", `left ${dd.left.toFixed(1)} right ${dd.right.toFixed(1)}`, `#${w.blocks}`,
         said ? "(user said)" : "", goal ? (pts?.length ? `way around: ${pts.length} points` : "no way around on the map") : "no map goal");
     if (S.walk !== w) return;
+    const sawIt = what || (w.lastPath && Date.now() - w.lastPath.t < 10000 && /blocked/.test(w.lastPath.ahead)) || (dd.left < 1.5 && dd.right < 1.5);
     if (pts?.length > 1) {
       w.detour = pts;
       const first = pts.find((q) => roomDist(N.pose, q) > 0.8) || pts[0], side = angleDiff(N.heading, roomBearing(N.pose, first)) < 0 ? "left" : "right";
       return say(`Stop. ${name}. I'll take you around it, to your ${side}. Follow the ticking.`, { urgent: true });
+    }
+    if (w.path && w.to && sawIt) {   // LiDAR and the camera agree it's blocked: a route around that spot, from here
+      addBlock(w.lastPath?.what && w.lastPath.what !== "none" ? w.lastPath.what : what || "wall");
+      say(`Stop. ${name}, and there's no way around it here. I'll find a different way.`, { urgent: true });
+      return rerouteWalk(w);
     }
     return walkBackShort(w, name);
   } catch (e) { log("around check failed", e.message); }
@@ -1016,6 +1061,23 @@ async function pathCheck(w) {
     const r = await (await fetch(SERVER + "/path_ahead", { method: "POST", body: fd, signal: AbortSignal.timeout(6000) })).json();
     if (S.walk !== w) return;
     log("path ahead:", r.ahead, "path", r.path, r.what && r.what !== "none" ? r.what : "");
+    const prev = w.lastPath;
+    w.lastPath = { ...r, t };
+    // Act only when two looks in a row agree (replaying trip 15:30, single looks flipped left/right at a building
+    // 50 m away; the real wall was flagged on every look from 13 s before it).
+    const agree = prev && t - prev.t < 3 * PATH_EVERY_MS && prev.ahead === r.ahead && prev.path === r.path;
+    if (r.ahead === "blocked" && !(N.depth && N.depth.ahead < 2)) r.ahead = "blocked_soon";   // fills the photo but LiDAR says it isn't close
+    if (!agree && r.ahead !== "blocked") return;
+    if (r.ahead === "blocked_soon") {   // across the path 3-15 m ahead: warn now, while there's room to choose
+      const named = r.what && r.what !== "none" ? r.what : "something";
+      obstacleSeen(named);
+      if (r.path === "left" || r.path === "right") { w.bias = r.path === "left" ? -PATH_BIAS_DEG : PATH_BIAS_DEG; w.biasUntil = t + PATH_BIAS_MS; }
+      if (t - (w.soonSaidAt || 0) > PATH_BIAS_MS) {
+        w.soonSaidAt = t;
+        say(`Heads up, there's a ${named} across the path ahead.${r.path === "left" || r.path === "right" ? ` The way goes ${r.path}. Bear ${r.path}.` : " Slow down."}`);
+      }
+      return;
+    }
     if (r.ahead === "blocked" && (r.path === "left" || r.path === "right")) {
       w.bias = r.path === "left" ? -PATH_BIAS_DEG : PATH_BIAS_DEG; w.biasUntil = t + PATH_BIAS_MS;
       say(`The path goes ${r.path} here${r.what && r.what !== "none" ? `, there's a ${r.what} ahead` : ""}. Bear ${r.path}.`);
@@ -1098,7 +1160,7 @@ function hazardCheck() {
   }
   const a = N.depth.ahead;
   if (forward < 0.25 || turning > 30 || a > 0.7 || now - hazardSaidAt < 8000) return;
-  hazardSaidAt = now; S.hazardAt = now;
+  hazardSaidAt = now; S.hazardAt = now; obstacleSeen();
   say(a < 0.45 ? "Stop. Something right in front of you." : "Careful, something in front of you.", { urgent: a < 0.45 });
 }
 
@@ -1198,6 +1260,244 @@ function atSign(m) {   // walked up to a matching sign
   slamMap(m, `reached the sign "${t.sign}"`);
 }
 
+// ---------- indoor_workflow: correlated camera actions and measured section routes ----------
+const INDOOR_DEVICE = window.PIP_DEVICE_ID || localStorage.getItem("pip.indoor.device") || window.crypto?.randomUUID?.() || `${SESSION}-${Date.now()}`;
+const INDOOR_YES = /^\W*(yes|yeah|yep|yup|sure|ok(?:ay)?|go(?: ahead)?|let'?s go|take me(?: there)?|start)(?:[,\s]+(?:please|let'?s go|go ahead))?[.!?\s]*$/i;
+localStorage.setItem("pip.indoor.device", INDOOR_DEVICE);
+let indoorTask = null;
+function indoorContext() {
+  return { version: !NATIVE || window.PIP_DEVICE_ID ? 1 : 0, device_id: INDOOR_DEVICE,
+           frame_id: N.frame || null, tracking: Date.now() - (N.updatedAt || 0) < 1500 ? N.pose?.tracking || "unavailable" : "unavailable" };
+}
+function indoorMetadata(task) {
+  return { session: SESSION, request_id: task.request_id, visit_id: task.visit_id,
+           device_id: INDOOR_DEVICE, frame_id: N.frame || null, floor: task.floor, ctx: status() };
+}
+function indoorCancel(notify = true) {
+  const task = indoorTask; indoorTask = null;
+  if (!task) return;
+  task.abort?.abort();
+  if (S.walk?.indoor === task) S.walk = null;
+  if (S.orient?.indoor === task) S.orient = null;
+  if (notify) fetch(SERVER + "/indoor_workflow/events", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...indoorMetadata(task), event: "cancelled" }), signal: AbortSignal.timeout(5000),
+  }).catch((e) => log("indoor cancellation:", e.message));
+}
+async function indoorDeliver(task, response) {
+  if (indoorTask !== task) return;
+  if (!response.ok) throw new Error(`indoor callback HTTP ${response.status}`);
+  const result = await response.json();
+  if (indoorTask !== task) return;
+  if (result.status === "processing") return;
+  if (!result.action && !["confirmation", "guiding"].includes(task.phase)) {
+    indoorTask = null;
+    if (S.orient?.indoor === task) S.orient = null;
+  }
+  return act(result);
+}
+async function indoorEvent(task, event, extra = {}) {
+  if (indoorTask !== task) return;
+  if (["blocked", "camera_unavailable", "no_path", "stale_map", "tracking_unavailable", "outside_map"].includes(event)) {
+    task.phase = "terminal";
+    if (S.walk?.indoor === task) S.walk = null;
+  }
+  try {
+    const response = await fetch(SERVER + "/indoor_workflow/events", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...indoorMetadata(task), event, tracking: N.pose?.tracking || "unavailable", ...extra }),
+      signal: AbortSignal.timeout(15000),
+    });
+    return await indoorDeliver(task, response);
+  } catch (e) {
+    if (indoorTask !== task) return;
+    log("indoor event:", e.message); indoorCancel(false);
+    say("Stop. I couldn't finish that indoor action."); render();
+  }
+}
+async function indoorObservation() {
+  if (NATIVE) {
+    const observation = await askNative({ type: "indoorObservation" }, 8000);
+    if (observation) return observation;
+    if (N.pose) return null;
+  }
+  const blob = await frameBlob();
+  if (!blob) return null;
+  const image = await new Promise((resolve, reject) => {
+    const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]);
+    reader.onerror = reject; reader.readAsDataURL(blob);
+  });
+  return { observation_id: window.crypto?.randomUUID?.() || `${SESSION}-${Date.now()}`, captured_at: Date.now() / 1000, frame_id: N.frame || null,
+           tracking: "unavailable", lines: [], image };
+}
+async function indoorCapture(task) {
+  task.phase = "capture";
+  await ensureCamera();
+  if (indoorTask !== task) return;
+  const views = [], start = Date.now();
+  let turned = 0, last = N.heading, next = 0;
+  if (task.mode === "around" && N.heading != null) {
+    S.orient = { seen: 0, dirs: [], name: task.goal || task.label || "sections", indoor: task };
+    say("Stand still. Turn slowly all the way around while I read the signs."); render();
+  }
+  while (indoorTask === task && Date.now() - start < 30000 &&
+         (!views.length || (task.mode === "around" && N.heading != null && Math.abs(turned) < 330))) {
+    if (N.heading != null && last != null) { turned += angleDiff(last, N.heading); last = N.heading; }
+    if (S.orient?.indoor === task) spun(S.orient);
+    if (views.length < 4 && Math.abs(turned) >= next) {
+      const view = await indoorObservation();
+      if (indoorTask !== task) return;
+      if (view) views.push(view);
+      next += 90;
+      if (task.mode !== "around" || N.heading == null) break;
+    }
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  if (indoorTask !== task) return;
+  if (S.orient?.indoor === task) S.orient = null;
+  if (!views.length) return indoorEvent(task, "camera_unavailable");
+  if (views.some((v) => v.frame_id !== task.frame_id)) return indoorEvent(task, "stale_map");
+  task.abort = new AbortController();
+  const deadline = setTimeout(() => task.abort.abort(), 180000); // Four bounded vision calls plus upload.
+  const body = new FormData();
+  views.forEach((view, i) => { body.append("images", b64ToBlob(view.image), `view${i}.jpg`); delete view.image; });
+  body.append("metadata", JSON.stringify({ ...indoorMetadata(task), views, rotation_degrees: Math.abs(turned) }));
+  task.phase = "processing"; S.looking = Date.now(); render();
+  try {
+    await indoorDeliver(task, await fetch(SERVER + "/indoor_workflow/observations", { method: "POST", body, signal: task.abort.signal }));
+  } finally { clearTimeout(deadline); S.looking = null; render(); }
+}
+async function indoorPath(task, approach = false) {
+  if (!NATIVE || indoorContext().tracking !== "ok" || !slamReady() || N.frame !== task.anchor.frame_id) return null;
+  const target = approach ? task.anchor : task.route?.at(-1);
+  if (!target) return null;
+  return askNative({ type: "indoorPath", frame_id: task.anchor.frame_id, x: target.x, z: target.z,
+                     approach, viewpoint: task.anchor.kind === "viewpoint" }, 8000);
+}
+const indoorPathValid = (path) => Array.isArray(path) && path.length > 0 && path.every((p) => Number.isFinite(p.x) && Number.isFinite(p.z));
+async function indoorPrepare(task) {
+  if (task.anchor.device_id !== INDOOR_DEVICE || !NATIVE) return indoorEvent(task, "stale_map");
+  if (task.restore && N.frame !== task.anchor.frame_id) {
+    const loaded = await askNative({ type: "loadMap", frame: task.anchor.frame_id }, 4000);
+    if (indoorTask !== task) return;
+    if (!loaded) return indoorEvent(task, "stale_map");
+    say("Stand still and point the phone around slowly so I can recognize the room.");
+    let stable = null;
+    for (const end = Date.now() + 25000; Date.now() < end && indoorTask === task;) {
+      if (N.frame === task.anchor.frame_id && slamReady()) { stable ??= Date.now(); if (Date.now() - stable >= 1000) break; }
+      else stable = null;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  if (indoorTask !== task) return;
+  if (N.frame !== task.anchor.frame_id) return indoorEvent(task, "stale_map");
+  const route = await indoorPath(task, true);
+  if (indoorTask !== task) return;
+  if (!indoorPathValid(route)) return indoorEvent(task, "no_path");
+  task.route = route; task.phase = "confirmation";
+  const distance = route.slice(1).reduce((sum, p, i) => sum + roomDist(route[i], p), 0);
+  return indoorEvent(task, "route_ready", { distance_m: distance });
+}
+async function indoorAction(action) {
+  if (action.operation === "context_changed") {
+    indoorCancel(false);
+    if (action.reset_map && NATIVE) await askNative({ type: "resetAR" }, 3000);
+    return;
+  }
+  if (action.operation === "guiding") {
+    const task = indoorTask;
+    if (!task || task.request_id !== action.request_id || task.phase !== "confirmation") return;
+    const route = await indoorPath(task);
+    if (indoorTask !== task) return;
+    if (!indoorPathValid(route)) return indoorEvent(task, "no_path");
+    task.phase = "guiding"; task.route = route; task.operation = "guiding";
+    S.find = null; S.route = null; S.back = null; S.mission = null; S.trip = null; S.preview = null; S.paused = false;
+    S.walk = { indoor: task, same: true, name: task.label, pts: route.map((ar) => ({ ar })), i: 0,
+               from: { ar: { x: N.pose.x, z: N.pose.z } }, phase: "go", onCourse: true, saidAt: 0, checkedAt: Date.now() };
+    render(); return;
+  }
+  indoorCancel(false);
+  const task = indoorTask = { ...action };
+  if (S.walk || S.mission || S.back || S.find || S.learning) {
+    S.walk = null; S.mission = null; S.back = null; S.find = null; S.learning = null; S.trip = null;
+  }
+  try {
+    if (action.operation === "capture" || action.operation === "verify") await indoorCapture(task);
+    else if (action.operation === "prepare_route") await indoorPrepare(task);
+    else if (action.operation === "save_map") {
+      const ok = N.frame === task.frame_id && await askNative({ type: "saveMap" }, 15000);
+      if (indoorTask === task) await indoorEvent(task, "map_saved", { ok: Boolean(ok) });
+    }
+  } catch (e) {
+    if (indoorTask !== task) return;
+    log("indoor action:", e.message); indoorCancel();
+    say("I couldn't complete the indoor observation. Please try again.");
+  } finally { render(); }
+}
+async function indoorRepath(w) {
+  if (w.checking) return;
+  w.checking = true;
+  const path = await indoorPath(w.indoor);
+  if (S.walk !== w || indoorTask !== w.indoor) return;
+  w.checking = false;
+  if (!indoorPathValid(path)) { S.walk = null; return indoorEvent(w.indoor, "no_path"); }
+  w.pts = path.map((ar) => ({ ar })); w.i = 0; w.checkedAt = Date.now();
+}
+async function indoorDecisionScan(w) {
+  const task = w.indoor;
+  w.observing = true; say("Stop for a moment. I'll read the signs here.");
+  task.abort = new AbortController();
+  const deadline = setTimeout(() => task.abort.abort(), 180000);
+  try {
+    const view = await indoorObservation();
+    if (S.walk !== w || indoorTask !== task || !view) return;
+    const body = new FormData();
+    body.append("images", b64ToBlob(view.image), "decision.jpg"); delete view.image;
+    body.append("metadata", JSON.stringify({ ...indoorMetadata(task), decision: true, views: [view] }));
+    await indoorDeliver(task, await fetch(SERVER + "/indoor_workflow/observations", { method: "POST", body, signal: task.abort.signal }));
+  } catch (e) {
+    if (indoorTask === task) log("indoor decision observation:", e.message);
+  } finally {
+    clearTimeout(deadline); w.observing = false; w.checkedAt = 0;
+  }
+}
+function indoorWalkCue(w) {
+  const task = w.indoor;
+  if (indoorTask !== task) { S.walk = null; return null; }
+  if (indoorContext().tracking !== "ok" || !slamReady() || N.frame !== task.anchor.frame_id) {
+    w.l = null; w.checkedAt = 0; w.lostSince ??= Date.now();
+    if (!w.lostSaid) { w.lostSaid = true; say("Stop. Hold the phone steady and point it around slowly."); }
+    if (N.frame !== task.anchor.frame_id) { S.walk = null; indoorEvent(task, "stale_map"); }
+    return null;
+  }
+  w.lostSince = null; w.lostSaid = false;
+  if (N.depth?.ahead < 0.7 && w.onCourse) { S.walk = null; say("Stop. Something is in front of you.", { urgent: true }); indoorEvent(task, "blocked"); return null; }
+  if (w.observing) return null;
+  if (w.checking || Date.now() - w.checkedAt > 1500) { indoorRepath(w); return null; }
+  while (w.i < w.pts.length - 1 && roomDist(N.pose, w.pts[w.i].ar) < 0.12) {
+    const point = w.pts[w.i].ar, before = w.pts[Math.max(0, w.i - 5)].ar, after = w.pts[Math.min(w.pts.length - 1, w.i + 5)].ar;
+    // Read at substantial bends over ~0.5 m, not each 10 cm grid step; nearby repeats share one observation.
+    const corner = w.i > 0 && Math.abs(angleDiff(roomBearing(before, point), roomBearing(point, after))) >= 60;
+    task.decisions ??= [];
+    if (corner && !task.decisions.some((p) => roomDist(p, point) < 1)) {
+      task.decisions.push(point); indoorDecisionScan(w); return null;
+    }
+    w.i++;
+  }
+  const target = w.pts[w.i].ar;
+  const d = roomDist(N.pose, target), off = angleDiff(N.heading, roomBearing(N.pose, target));
+  w.l = { d, off, via: "ar", r: 0.12 }; w.onCourse = Math.abs(off) <= ON_COURSE; w.phase = w.onCourse ? "go" : "turn";
+  if (w.i === w.pts.length - 1 && d < 0.2) {
+    S.walk = null; say("Stop. I'll verify the section here."); indoorEvent(task, "approach_reached"); return null;
+  }
+  if (Date.now() - w.saidAt > 6000) {
+    w.saidAt = Date.now();
+    const next = nextTurn(w, w.l);
+    say(w.onCourse ? `Walk ${stepsWords(next.d)}.` : turnWords(off));
+  }
+  return w.onCourse ? ON_TICK : offTap(off, ON_COURSE);
+}
+
 // ---------- SLAM MISSION (iPhone with LiDAR): decide from the floor map, not from guesses ----------
 // map (spin to map the room) -> decide (pick a REAL door/opening from the map) -> go (A* path, taps) ->
 // at a door: open it -> through -> map again ... -> done only when the vision model agrees we're inside.
@@ -1228,6 +1528,11 @@ async function slamMap(m, why) {
     if (c.verdict === "back") return slamBacktrack(m, c.why);
     if (await hopCheck(m, why)) return;                              // through a door, or somewhere new: the brain picks the next step
   }
+  if (m.mapping) return;
+  m.mapping = true;
+  try { await slamSpin(m, why); } finally { m.mapping = false; }
+}
+async function slamSpin(m, why) {
   m.phase = "map"; m.phaseAt = Date.now(); render();
   say(m.decisions.length || S.trip?.hops ? "Let me map this spot. Turn slowly all the way around." : "I'll map the room first. Turn slowly all the way around.");
   let turned = 0, last = N.heading, readAt = -999, step = -1; const t0 = Date.now(), reads = [];
@@ -1713,7 +2018,7 @@ async function obstacleCheck(m) {
         } catch (e) { log("door check failed", e.message); }
         finally { m.doorBusy = false; }
       }
-      const side = N.depth.left > N.depth.right ? "left" : "right";
+      const side = N.depth.left > N.depth.right ? "left" : "right"; obstacleSeen();
       say(`Stop. Something's ${N.depth.ahead.toFixed(1)} meters ahead. There's more room on your ${side}.`, { urgent: true });
       m.blockedCount = (m.blockedCount || 0) + 1;
       if (m.blockedCount >= 3) {   // LiDAR phone: map this spot again (not the camera look-around, that's for phones without it)
@@ -2128,6 +2433,39 @@ async function findStep(blob) {
 // ---------- camera -> local planner (obstacles) ----------
 let video, canvas, busy = false, lastFrame = null, hazardSaidAt = 0, camOn = null;
 // Camera only when asked: find something, describe, or active guidance. Not while just talking.
+// ---------- demo view (recorded demos): what the camera and detector see, which model is thinking ----------
+const DEMO_CALLS = { "/talk": "brain", "/decide_slam": "brain · map", "/path_ahead": "vision · path ahead", "/panorama": "vision · looking around",
+  "/door": "vision · door", "/check_room": "vision · room", "/confirm": "vision · second look", "/replan": "vision · plan", "/describe": "vision · describe" };
+S.demo = (() => { try { return (localStorage.getItem("pip.demo") ?? "1") === "1"; } catch { return true; } })();
+S.calls = new Map();   // model calls in flight -> their label, for the demo's "thinking" chip
+const fetchRaw = window.fetch.bind(window);
+window.fetch = (url, opts) => {
+  const label = DEMO_CALLS[String(url).replace(SERVER, "").split("?")[0]];
+  if (!label) return fetchRaw(url, opts);
+  const k = {}; S.calls.set(k, label);
+  return fetchRaw(url, opts).finally(() => S.calls.delete(k));
+};
+function demoToggle() {
+  S.demo = !S.demo;
+  try { localStorage.setItem("pip.demo", S.demo ? "1" : "0"); } catch (e) { log("demo setting not saved:", e.message); }
+  if (S.demo && started) ensureCamera();
+  log("demo view", S.demo ? "on" : "off");
+}
+let cloudAt = 0, cloudBusy = false;
+function pollCloud() {   // the LiDAR points for the demo's 3D view, ~7 times a second while it's open
+  if (cloudBusy || Date.now() - cloudAt < 150) return;
+  cloudBusy = true; cloudAt = Date.now();
+  askNative({ type: "cloud" }, 800).then((p) => { if (p?.length) S.cloud = p; }).finally(() => { cloudBusy = false; });
+}
+function obstacleSeen(what) { S.obstacleAt = Date.now(); if (what) S.obstacleWhat = what; }   // opens the demo's 3D view
+async function demoRecord() {   // ReplayKit on the phone: the screen and Pip's sound, saved to Photos
+  const on = !S.recording;
+  const r = await askNative({ type: "record", on }, on ? 15000 : 30000);
+  if (!r?.ok) return log("recording", on ? "start" : "stop", "failed:", r?.error || "no answer");
+  S.recording = on; S.recordAt = Date.now();
+  log(on ? "recording started" : "recording saved to Photos");
+  if (!on) say("Saved the recording to Photos.");
+}
 function ensureCamera() {
   if (!camOn) camOn = (NATIVE ? Promise.resolve() : startCamera()).then(() => { S.camFail = null; return localLoop(); }).catch((e) => { log("camera:", e.message); camOn = null; S.camFail = e.message; });   // LOOK and FIND show "No camera"
   return camOn;
@@ -2155,8 +2493,9 @@ async function frameBlob() {
   return new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.7));
 }
 async function localLoop() {
-  if (!busy && !S.paused && (S.find || guiding())) {
+  if (!busy && !S.paused && (S.find || guiding() || S.demo)) {
     const blob = await frameBlob();
+    if (blob && S.demo) S.demoBlob = blob;
     if (blob && S.mission) {
       busy = true; lastFrame = blob;
       try {
@@ -2174,6 +2513,7 @@ async function localLoop() {
       try {
         const r = await (await fetch(SERVER + "/local", { method: "POST", body: fd })).json();
         S.clear = r.clear; S.hint = guiding() ? r.hint : "clear"; S.hazards = r.hazards;
+        S.demoBoxes = { boxes: r.boxes || [], at: Date.now() };
         if (S.seg) S.seg.landmarks.push(...r.landmarks);
         const near = r.hazards.find((h) => h.near && h.side === "ahead");
         if (near && !NATIVE && guiding() && !S.learning && Date.now() - hazardSaidAt > 6000) { hazardSaidAt = Date.now(); say(`Careful, ${near.label} ahead.`, { urgent: true }); }
@@ -2241,7 +2581,7 @@ async function sendTalk() {
   return askPip({ body: pcm.buffer });
 }
 function status() {
-  return { pos: S.pos, heading: S.heading == null ? null : Math.round(S.heading),
+  return { indoor: indoorContext(), pos: S.pos, heading: S.heading == null ? null : Math.round(S.heading),
            gps: S.sim ? "simulated" : !gpsOn ? "off (not requested)" : S.gpsOk ? "ok" : "weak",
            gps_accuracy_m: S.acc == null ? null : Math.round(S.acc), navigating_to: S.route?.name || S.walk?.name || null,
            next_turn: S.route?.steps[S.stepIdx]?.turn || null, saved_spots: S.spots.map((s) => s.label),
@@ -2277,6 +2617,13 @@ const YES = /^\W*(yes|yeah|yep|yup|sure|ok(ay)?|go|let'?s go|take me( there)?|st
 // (tools/trip_report.py lists marks first). The rest of the sentence is kept as the note.
 const MARK = /^\W*(mark (that|this|it)|that was wrong)\b/i;
 function answerLocally(heard) {
+  if (indoorTask?.phase === "confirmation") {
+    if (INDOOR_YES.test(heard)) {
+      if (!indoorTask.confirming) { indoorTask.confirming = true; indoorEvent(indoorTask, "confirmed"); }
+      return true;
+    }
+    if (NO.test(heard)) { indoorCancel(); say("Okay."); render(); return true; }
+  }
   if (MARK.test(heard)) { log("MARK", heard); say("Marked."); return true; }
   if (S.preview && NO.test(heard)) { previewCancel(); return true; }
   if (S.preview && YES.test(heard)) { previewGo(); return true; }
@@ -2301,6 +2648,7 @@ const TASK_ACTIONS = new Set(["mission", "back", "replay", "find", "navigate", "
 const ASKED = /\b(take|go|bring|lead|guide|navigate|walk|head|find|look|search|where|back|return|stop|cancel|start|begin|restart|teach|learn|show me|help|need|want|please|let'?s|can you|could you)\b/i;
 async function act(r) {
   const a = r.action, heard = r.heard || "";
+  if (a && indoorTask && !["indoor_workflow", "pause", "resume", "repeat"].includes(a.type)) indoorCancel(a.type !== "stop");
   if (a && TASK_ACTIONS.has(a.type) && (S.mission || S.walk || S.find || S.back || S.learning) && heard && !ASKED.test(heard)) {
     log("ignored", a.type, "- no request in:", heard); return say("Okay.");
   }
@@ -2316,6 +2664,7 @@ async function act(r) {
   if (r.say) { lastBrainSay = r.say; lastBrainAt = Date.now(); }
   if (!a) return;
   switch (a.type) {
+    case "indoor_workflow": return indoorAction(a);
     case "search": return placeSearch(a.query);
     case "navigate": {   // the route takes over; coming out of a building they already agreed, so it starts at once
       S.trip = null;   // the brain only starts a route after they said yes: don't ask a second time
@@ -2401,6 +2750,7 @@ async function start() {
   $("start").remove();
   say(NATIVE ? "Hi, I'm Pip. To talk to me, hold the bar at the bottom of the screen." : "Hi, I'm Pip. To talk to me, hold space.");
   checkServer(); setInterval(checkServer, 15000);
+  if (S.demo) ensureCamera();
   fetch(SERVER + "/warmup", { method: "POST" }).then(() => checkServer()).catch(() => {});
   startSegment();   // GPS and camera stay off until the conversation needs them
   if (qs.get("lat") && qs.get("lon")) {   // desk demo: start here and walk with W/A/F

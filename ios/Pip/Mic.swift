@@ -30,6 +30,7 @@ final class Mic {
             // A2DP keeps Bluetooth headphones in stereo for output; input comes from the built-in mic.
             try? s.setCategory(.playAndRecord, mode: .default, options: opts)
         }
+        try? s.setAllowHapticsAndSystemSoundsDuringRecording(true)   // iOS mutes haptics while the mic records: the turn buzz never played
         try? s.setActive(true)
         if s.preferredInput?.portType != .builtInMic,
            let builtIn = s.availableInputs?.first(where: { $0.portType == .builtInMic }) { try? s.setPreferredInput(builtIn) }

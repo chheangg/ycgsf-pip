@@ -31,9 +31,28 @@ This **supersedes** MLH's "11:30 AM, Price Center". A participant in Discord als
 | **Team size** | Solo or teams; all experience levels | MLH about |
 | **Bring** | Laptop, charger, curiosity | Get-ready email |
 | **Check-in / submit** | OrganizerHQ (MyMLH) | MLH / starting email |
-| **Submission deadline** | **Sun Oct 25, 6:30 PM PDT** | MLH challenge pages only (not confirmed in Discord) |
+| **Initial submission** | **Sun Oct 25, 5:00 PM PDT** | Mohak, Discord #announcements 3:55 PM |
+| **Hard submission cutoff** | **Sun Oct 25, 6:30 PM PDT** (no late submissions) | Mohak, Discord #announcements 3:55 PM + MLH challenge pages |
 | **Discord** | https://discord.gg/RHeZUMc2 (joined as bayshores) | Mohak email Sat Oct 24 ~10:47 PM PT |
 | **Kickoff slides** | https://docs.google.com/presentation/d/1ulUjxc7lzSHWFgdUkjWBOl_FtbAEniymBnvE39fVvp4/edit?usp=sharing | Discord |
+
+### Re-check ~4:18 PM PT
+
+- No material change. Discord (#announcements, #resources, #general, #team-formation) has nothing after Mohak's 3:55 PM PT judging post, and CNL's 3:07 PM PT credits question is still unanswered. Personal Gmail is unchanged. Initial submission due 5:00 PM PT; hard cutoff 6:30 PM PT.
+
+### Re-check ~4:05 PM PT
+
+- No material change. Discord (#announcements, #resources, #general, #team-formation) has nothing after Mohak's 3:55 PM PT judging post; CNL's 3:07 PM credits question is still unanswered. Personal Gmail, the MLH page, and the Calendar event are unchanged. Initial submission due 5:00 PM PT; hard cutoff 6:30 PM PT.
+
+### Re-check ~3:58 PM PT: JUDGING / DEADLINES POSTED
+
+- **Mohak [CLM], #announcements, 3:55 PM PT (@everyone):** initial submission is **due 5:00 PM PT**. Hard submission cutoff is **6:30 PM PT**; MLH's platform stops accepting submissions then and late submissions will not be accommodated.
+- To add team members: on MLH's website, save the project as a draft, and the option to add teammates' names appears.
+- CNL's 3:07 PM PT question about Grok Imagine / Voice API credits is still unanswered. Personal Gmail and the MLH page are unchanged. No demo, judging format, prize, room, or end-time details posted.
+
+### Re-check ~3:47 PM PT
+
+- No material change. Discord (#announcements, #resources, #general, #team-formation) has nothing after CNL's 3:07 PM PT credits question, still unanswered; Mohak's latest post is still the 2:11 PM PT food post. Personal Gmail is unchanged. The MLH page is unchanged apart from now showing a "1 Submission" counter. Submissions still close at 6:30 PM PDT per MLH only.
 
 ### Re-check ~3:37 PM PT
 
@@ -124,6 +143,7 @@ Hacktoberfest Portal signup (separate from Fest registration, for swag / partner
 
 ## Files in this pack
 
+- [tools/README.md](tools/README.md) — upstream documentation for external tooling used by Pip
 - `schedule.md` — known timing + unknowns
 - `rules-prizes.md` — challenges, prizes, submission rules
 - `links.md` — all useful URLs

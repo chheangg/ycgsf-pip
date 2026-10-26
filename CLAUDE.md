@@ -18,6 +18,8 @@ The pen.dev file `design/untitled.pen` is the single source of truth for how Pip
 - **08 Search**: Restroom, 08b Grocery, 08c Looking around
 - **09 Route preview**
 
+**App Icon** (1024 x 1024) is the iPhone home-screen icon, a neon glass letter p whose round part is a map pin (`design/icon/app-icon.png`, 1024 x 1024, no transparency). The iPhone uses a copy of it: `ios/Pip/Assets.xcassets/AppIcon.appiconset/AppIcon.png`.
+
 Shared components: Status Bar, Key, Talk, Talk · On, Deafen, Deafen · On, Voice Bar (Hold to talk · Deafen, at the bottom of every live screen), Say Chip. The Button States frame shows how a key looks when ready, pressed, working, done and unavailable. The Motion + Gestures frame holds the motion, navigation and accessibility rules. Frame ids and each screen's fixed labels are in `design/tokens.json`.
 
 - `.pen` files are encrypted. Read and edit them only through the pen.dev MCP tools (`mcp__pencil__*`), never with Read or Grep.

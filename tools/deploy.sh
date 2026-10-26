@@ -8,10 +8,10 @@ BOX="${PIP_BOX:-hackteam@100.71.218.127}"
 HOST="${BOX#*@}"
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 -o LogLevel=ERROR "$BOX")
 
-python3 -m py_compile server/app.py server/home_depot.py
+python3 -m py_compile server/app.py server/home_depot.py server/walmart.py server/indoor_workflow.py
 stamp=$(date +%Y%m%d-%H%M%S)
 "${SSH[@]}" "if exist C:\\ycgsf\\server\\app.py copy /y C:\\ycgsf\\server\\app.py C:\\ycgsf\\server\\app.py.bak-$stamp >nul"
-scp -q -o BatchMode=yes -o LogLevel=ERROR server/app.py server/home_depot.py server/home_depot_stores.csv server/requirements.txt "$BOX:C:/ycgsf/server/"
+scp -q -o BatchMode=yes -o LogLevel=ERROR server/app.py server/home_depot.py server/walmart.py server/indoor_workflow.py server/home_depot_stores.csv server/requirements.txt "$BOX:C:/ycgsf/server/"
 scp -q -o BatchMode=yes -o LogLevel=ERROR server/run_pip.bat server/restart_pip.ps1 "$BOX:C:/Users/hackteam/"
 "${SSH[@]}" "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\hackteam\\restart_pip.ps1"
 
