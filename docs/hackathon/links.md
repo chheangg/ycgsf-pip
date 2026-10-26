@@ -1,5 +1,7 @@
 # Links
 
+For documentation from the creators of Pip's external tools, see the [tooling docs index](tools/README.md).
+
 ## Primary
 
 - **MLH Fest page:** https://www.mlh.com/events/hacktoberfest-x-spacexai-hack-day-uc-san-diego

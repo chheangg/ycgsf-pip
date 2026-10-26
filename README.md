@@ -62,7 +62,9 @@ flowchart TD
    for Pip (you talking to someone else, the TV) are dropped.
 2. **The brain decides.** Qwen3-14B gets what you said, what the phone knows (GPS, heading, saved spots, taught
    routes) and a set of tools: find places, get a route, follow a taught route, record a route, go to a room or
-   object, find an object, describe, look and plan, where am I, go back. It can call up to 5 tools per turn, then
+   object, find an object, describe, look and plan, where am I, go back, look up Home Depot products and
+   aisle/bay labels through [home_depot](docs/hackathon/tools/homedepot.md), and get a Walmart aisle for known store and item IDs through
+   `get_walmart_location`. It can call up to 5 tool rounds per turn, then
    replies with one sentence and at most one action for the app. For anything that moves you, it tells you the
    plan and waits for "yes".
 3. **The long-term planner picks the next point.**
@@ -122,6 +124,8 @@ and steps) and Apple's voice as a fallback when the server is slow.
 
 Maps and places: Nominatim and Overpass (OpenStreetMap) and OSM foot routing by default. Set
 `GOOGLE_MAPS_API_KEY` on the server to use Google Places and Directions instead.
+Set `SERPAPI_API_KEY` on the server to enable Walmart aisle lookup. The tool requires numeric Walmart US
+store and item IDs, returns a verified aisle when available, and does not establish stock or a walking route.
 
 ## Where it runs
 

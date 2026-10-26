@@ -162,6 +162,7 @@ Hacktoberfest Portal signup (separate from Fest registration, for swag / partner
 
 ## Files in this pack
 
+- [tools/README.md](tools/README.md) — upstream documentation for external tooling used by Pip
 - `schedule.md` — known timing + unknowns
 - `rules-prizes.md` — challenges, prizes, submission rules
 - `links.md` — all useful URLs
