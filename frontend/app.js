@@ -903,18 +903,16 @@ function bestPlace(query, places, here) {
   const named = scored.filter((p) => p.hit >= 0.5 && p.d <= Math.max(2000, 3 * nearest));
   return named.length ? named.sort((a, b) => b.hit - a.hit || a.d - b.d)[0] : scored.sort((a, b) => a.d - b.d)[0];   // else: just the nearest
 }
-// Places pinned by hand, where the map's point for them is off (Target sits mid-building in Price Center; Apple's route
-// to it ended on the wrong side). A spoken name matching one of these goes straight there, no map search.
-const PINNED = [
-  { words: /\btarget\b/i, name: "Target", lat: null, lon: null, where: ", at Price Center" },
-];
+// Places pinned by hand where the map's point is off: Apple put Target mid-building in Price Center and its route ended
+// on the wrong side. This pin is Google's for the store (maps.app.goo.gl/m1sYMT92rVTqJvgb8), ~80 m from Apple's.
+const PINNED = [{ words: /\btarget\b/i, name: "Target", lat: 32.8792434, lon: -117.2373308, where: ", at Price Center" }];
 async function placeSearch(query) {
   if (!query) return say("What place should I look for?");
   ensureGPS(); say("Looking it up.");
   for (let i = 0; i < 20 && !gpsGood(100); i++) await new Promise((r) => setTimeout(r, 500));
   if (!S.fix) return say("I can't get your location yet. Ask me again in a moment.");
   const here = { lat: S.fix.lat, lon: S.fix.lon };
-  const pin = PINNED.find((x) => x.lat != null && x.words.test(query));
+  const pin = PINNED.find((x) => x.words.test(query));
   if (pin) { log("pinned place:", pin.name, pin.lat, pin.lon); return gpsWalk(pin.name, { lat: pin.lat, lon: pin.lon }, null, true, { where: pin.where }); }
   const qs = [...new Set([cleanQuery(query), query])];   // the plain name first, the words as said too
   const answers = NATIVE ? await Promise.all(qs.map((q) => askNative({ type: "search", q, lat: here.lat, lon: here.lon }, 10000))) : [];
