@@ -23,6 +23,9 @@ graphify-out/  code knowledge graph (see CLAUDE.md)
 run.sh         serves frontend/ on http://localhost:5173
 ```
 
+The model's [indoor_workflow tool](docs/tools/indoor.md) reads signs, identifies sections,
+recalls explicitly saved place/floor knowledge, and prepares verified local routes through the existing tool dispatcher.
+
 ## How it works
 
 ```mermaid
