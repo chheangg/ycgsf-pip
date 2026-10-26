@@ -2196,6 +2196,7 @@ function ensureCamera() {
   return camOn;
 }
 const guiding = () => Boolean(S.route || S.back || S.learning || S.mission || S.walk);
+const serverDown = () => Boolean((S.serverDown && Date.now() - S.serverDown < 60000) || (S.server && !S.server.ok));
 async function startCamera(deviceId) {
   // Widest view the camera offers: full HD, minimum zoom (many laptop/USB cams default to a cropped 640x480).
   const base = { width: { ideal: 1920 }, height: { ideal: 1080 }, ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: "environment" }) };

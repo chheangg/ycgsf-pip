@@ -7,6 +7,26 @@ const el = (id) => document.getElementById(id);
 const setText = (id, t) => { const e = el(id); t = String(t); if (e && e.textContent !== t) e.textContent = t; };
 const setHTML = (id, h) => { const e = el(id); if (e && e._h !== h) { e._h = h; e.innerHTML = h; } };
 const setCls = (id, c) => { const e = el(id); if (e && e.className !== c) e.className = c; };
+// State word (top line): when it changes, its letters flicker through random characters and land left to right in 200 ms.
+const SCRAMBLE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#%&*+=/", scrambling = {};
+function setState(id, word) {
+  const e = el(id); if (!e || e.dataset.word === word) return;
+  const first = e.dataset.word === undefined; e.dataset.word = word; clearInterval(scrambling[id]);
+  if (first || reduced() || !e.offsetParent) { e.textContent = word; return; }
+  const t0 = performance.now();
+  scrambling[id] = setInterval(() => {
+    const p = Math.min(1, (performance.now() - t0) / 200), fixed = Math.floor(p * word.length);
+    e.textContent = word.slice(0, fixed) + [...word.slice(fixed)].map((c) => (c === " " ? c : SCRAMBLE[Math.floor(Math.random() * SCRAMBLE.length)])).join("");
+    if (p >= 1) clearInterval(scrambling[id]);
+  }, 30);
+}
+// Distances count down like a mileage counter: each new whole number rolls in from below.
+function setRoll(id, num) {
+  const e = el(id); if (!e) return;
+  const before = parseInt(e.textContent, 10); setText(id, num);
+  if (!reduced() && e.offsetParent && Number.isFinite(before) && parseInt(num, 10) !== before)
+    e.animate([{ transform: "translateY(40%)", opacity: 0.2 }, { transform: "none", opacity: 1 }], { duration: 180, easing: "ease-out" });
+}
 const showEl = (id, on) => { const e = el(id); if (e && e.hidden === on) e.hidden = !on; };
 const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const UP = (t) => String(t || "").toUpperCase();
@@ -57,14 +77,14 @@ function shader(canvas, name) {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   };
 }
-// Liquid glass: the design's shaders/liquid-glass.glsl on every control. It frosts and bends the backdrop and lights the rim.
-// Behind every control is the plain page background, so each look is drawn once per control size, into a CSS
-// variable (--g-clear, --g-pink...), and the CSS picks the look for each state. Tints are the design's.
+// Liquid glass: the design's shaders/liquid-glass.glsl on every control. The glass is see-through so the moving
+// background shows: CSS frosts what's behind (the shader's 10 px blur) and lays the look's tint over it (--t-<look>, the
+// shader's mix with the tint). Only the lit rim comes from the shader, drawn once per control size (--g-rim). The shader's
+// bending at the edge is left out: over the dim background it isn't visible.
 const GLASS_LOOKS = { clear: ["--fg", 0.08], pink: ["--accent", 0.82], work: ["--accent", 0.2], white: ["--fg", 0.9], chip: ["--accent", 0.12], send: ["--fg", 0.14] };
-const GLASS_SEL = [[".chip", ["chip"]], [".typebox button", ["send"]], [".typebox", ["clear"]], [".place .go", ["pink", "white"]],
-                   [".key, #talk, #deafen", ["clear", "pink", "work", "white"]]];
+const GLASS_SEL = ".key, #talk, #deafen, .chip, .place .go, .typebox, .typebox button";
 const glassCache = new Map();
-let glassGL, glassShape = { id: "" };
+let glassGL;
 function glassContext() {
   const c = document.createElement("canvas"), gl = c.getContext("webgl", { preserveDrawingBuffer: true });
   if (!gl?.getExtension("OES_texture_float")) { log("glass: no WebGL float textures, plain colors instead"); return null; }
@@ -82,55 +102,63 @@ function glassContext() {
     for (const k of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T]) gl.texParameteri(gl.TEXTURE_2D, k, gl.CLAMP_TO_EDGE);
     gl.uniform1i(gl.getUniformLocation(prog, name), unit);
   }
-  return { c, gl, u: (k) => gl.getUniformLocation(prog, k) };
+  // Black backdrop and no tint: what the shader draws is then the rim light alone.
+  gl.activeTexture(gl.TEXTURE0); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+  const u = (k) => gl.getUniformLocation(prog, k);
+  gl.uniform3fv(u("u_tint"), [0, 0, 0]); gl.uniform1f(u("u_tintAmt"), 0);
+  for (const [k, v] of Object.entries({ u_bezel: 16, u_refract: 22, u_frost: 10, u_spec: 0.7, u_disp: 0.12, u_lightY: 1 })) gl.uniform1f(u(k), v);
+  return { c, gl, u, out: document.createElement("canvas") };
 }
-function glassImage(w, h, r, look) {
+function glassRim(w, h, r) {
   const dpr = devicePixelRatio || 1, W = Math.round(w * dpr), H = Math.round(h * dpr), shape = `${W}x${H}r${r}`;
-  if (glassCache.has(shape + look)) return glassCache.get(shape + look);
+  if (glassCache.has(shape)) return glassCache.get(shape);
   if (glassGL === undefined) glassGL = glassContext();
   if (!glassGL) return null;
-  const { c, gl, u } = glassGL;
-  if (glassShape.id !== shape) {
-    // The shape, per pixel: how far in from the rounded edge (CSS px, the design's unit) and which way is in (y up,
-    // like gl_FragCoord). The looks of one control share it.
-    const sdf = new Float32Array(W * H * 4), hw = w / 2, hh = h / 2;
-    for (let j = 0, k = 0; j < H; j++) for (let i = 0; i < W; i++, k += 4) {
-      const px = (i + 0.5) / dpr - hw, py = (j + 0.5) / dpr - hh, qx = Math.abs(px) - (hw - r), qy = Math.abs(py) - (hh - r);
-      if (qx > 0 && qy > 0) { const L = Math.hypot(qx, qy); sdf[k] = r - L; sdf[k + 1] = -Math.sign(px) * qx / L; sdf[k + 2] = -Math.sign(py) * qy / L; }
-      else if (qx > qy) { sdf[k] = r - qx; sdf[k + 1] = -Math.sign(px); } else { sdf[k] = r - qy; sdf[k + 2] = -Math.sign(py); }
-    }
-    c.width = W; c.height = H; gl.viewport(0, 0, W, H);
-    gl.activeTexture(gl.TEXTURE1); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.FLOAT, sdf);
-    // The backdrop: the page background, one pixel (frosting or bending a flat color gives the same color).
-    gl.activeTexture(gl.TEXTURE0);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([...vec3(css("--bg")).map((v) => v * 255), 255]));
-    glassShape = { id: shape };
+  const { c, gl, u, out } = glassGL;
+  // The shape, per pixel: how far in from the rounded edge (CSS px, the design's unit) and which way is in (y up, like gl_FragCoord).
+  const sdf = new Float32Array(W * H * 4), hw = w / 2, hh = h / 2;
+  for (let j = 0, k = 0; j < H; j++) for (let i = 0; i < W; i++, k += 4) {
+    const px = (i + 0.5) / dpr - hw, py = (j + 0.5) / dpr - hh, qx = Math.abs(px) - (hw - r), qy = Math.abs(py) - (hh - r);
+    if (qx > 0 && qy > 0) { const L = Math.hypot(qx, qy); sdf[k] = r - L; sdf[k + 1] = -Math.sign(px) * qx / L; sdf[k + 2] = -Math.sign(py) * qy / L; }
+    else if (qx > qy) { sdf[k] = r - qx; sdf[k + 1] = -Math.sign(px); } else { sdf[k] = r - qy; sdf[k + 2] = -Math.sign(py); }
   }
-  const [tint, amt] = GLASS_LOOKS[look];
-  gl.uniform2f(u("u_resolution"), W, H); gl.uniform3fv(u("u_tint"), vec3(css(tint))); gl.uniform1f(u("u_tintAmt"), amt);
-  for (const [k, v] of Object.entries({ u_bezel: 16, u_refract: 22, u_frost: 10, u_spec: 0.7, u_disp: 0.12, u_lightY: 1 })) gl.uniform1f(u(k), v);
+  c.width = W; c.height = H; gl.viewport(0, 0, W, H);
+  gl.activeTexture(gl.TEXTURE1); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.FLOAT, sdf);
+  gl.uniform2f(u("u_resolution"), W, H);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
-  const url = `url(${c.toDataURL()})`;
-  glassCache.set(shape + look, url);
+  // Keep the rim as white light that is as see-through as it is dark (WebGL rows run bottom-up).
+  const lit = new Uint8Array(W * H * 4); gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, lit);
+  out.width = W; out.height = H;
+  const g = out.getContext("2d"), img = g.createImageData(W, H);
+  for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+    const d = (j * W + i) * 4;
+    img.data[d] = img.data[d + 1] = img.data[d + 2] = 255; img.data[d + 3] = lit[((H - 1 - j) * W + i) * 4];
+  }
+  g.putImageData(img, 0, 0);
+  const url = `url(${out.toDataURL()})`;
+  glassCache.set(shape, url);
   return url;
 }
-const glassLooks = (e) => GLASS_SEL.find(([sel]) => e.matches(sel))?.[1] || [];
 const glassSize = new ResizeObserver((entries) => {
   for (const { target: e } of entries) {
     const w = e.offsetWidth, h = e.offsetHeight, r = Math.min(parseFloat(getComputedStyle(e).borderTopLeftRadius) || 0, w / 2, h / 2);
     if (!w || !h) continue;   // hidden: drawn when it shows
-    for (const look of glassLooks(e)) { const img = glassImage(w, h, r, look); if (img) e.style.setProperty(`--g-${look}`, img); }
+    const img = glassRim(w, h, r); if (img) e.style.setProperty("--g-rim", img);
+    const b = e.getBoundingClientRect(); e.style.setProperty("--shine-at", `${Math.round((b.left + b.top) * 0.4)}ms`);   // shine: when a screen opens, one diagonal wave, ~60 ms per key
   }
 });
-const glassWatch = (root) => { for (const [sel] of GLASS_SEL) for (const e of root.querySelectorAll?.(sel) || []) glassSize.observe(e); };
+const glassWatch = (root) => { for (const e of root.querySelectorAll?.(GLASS_SEL) || []) glassSize.observe(e); };
 function initGlass() {
+  for (const [look, [tint, amt]] of Object.entries(GLASS_LOOKS))
+    document.documentElement.style.setProperty(`--t-${look}`, `rgb(${vec3(css(tint)).map((v) => Math.round(v * 255)).join(" ")} / ${amt})`);
   glassWatch(document);
-  new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) if (n.nodeType === 1) { glassWatch(n); if (glassLooks(n).length) glassSize.observe(n); } })
+  new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) if (n.nodeType === 1) { glassWatch(n); if (n.matches(GLASS_SEL)) glassSize.observe(n); } })
     .observe(document.body, { childList: true, subtree: true });
 }
 const GL = {};
 function initShaders() {
   for (const id of ["cursor", "l-cursor"]) { GL[id] = shader(el(id), "cursor"); if (!GL[id]) el(id).classList.remove("gl"); }
+  GL.bg = shader(el("bg"), "matrix");
   GL.wave = shader(el("wave"), "wave");
   for (const id of ["f-vf", "s-vf"]) {
     const c = document.createElement("canvas"); el(id).prepend(c);
@@ -140,7 +168,7 @@ function initShaders() {
 // ON COURSE pulses with each tick (every 0.4 s): the tap loop's own "on" ticks drive it, so the screen and the sound agree.
 const _tap = tap;
 tap = function (side, kind, ...rest) {
-  if (kind === "on" && !reduced() && current === "guide" && el("g-tag").textContent === "ON COURSE") el("g-tag").animate([{ opacity: 1 }, { opacity: 0.7 }], { duration: 380, easing: "ease-out", fill: "forwards" });
+  if (kind === "on" && !reduced() && current === "guide" && el("g-tag").dataset.word === "ON COURSE") el("g-tag").animate([{ opacity: 1 }, { opacity: 0.7 }], { duration: 380, easing: "ease-out", fill: "forwards" });
   return _tap(side, kind, ...rest);
 };
 const SCREENS = ["start", "listen", "guide", "find", "search", "teach", "preview", "places", "setup", "log"];   // overlay: places | setup | log (opened by the user)
@@ -176,7 +204,12 @@ function go(name) {
 let pressedEl = null;
 document.addEventListener("pointerdown", (e) => {
   const k = e.target.closest(".key, #deafen, .place .go");   // the talk bar has its own hold feedback (app.js)
-  if (!k || k.classList.contains("na")) return;
+  if (!k) return;
+  if (k.classList.contains("na")) {   // Unavailable: shakes and buzzes; its click makes Pip say why
+    if (!reduced()) k.animate([0, -6, 6, -4, 3, 0].map((x) => ({ transform: `translateX(${x}px)` })), { duration: 240, easing: "ease-out" });
+    toNative({ type: "haptic", style: "warning" }); return;
+  }
+  const b = k.getBoundingClientRect(); k.style.setProperty("--px", `${e.clientX - b.left}px`); k.style.setProperty("--py", `${e.clientY - b.top}px`);   // pink spreads from here
   pressedEl = k; k.classList.add("pressed");
   toNative({ type: "haptic" }); tap("both", "key");
 }, { passive: true });
@@ -190,7 +223,9 @@ function key(id, label, ic, style = "", extra = "") {
   const e = el(id); if (!e) return;
   let state = "";
   if (doneUntil[id] > Date.now()) { label = "Done"; ic = "check"; state = " done"; }
+  const lbl = el(id + "-l"), relabel = lbl && lbl.textContent !== label;
   setText(id + "-l", label); setHTML(id + "-ic", icon(ic));
+  if (relabel && !reduced() && e.offsetParent) lbl.animate([{ transform: "translateY(70%)", opacity: 0 }, { transform: "none", opacity: 1 }], { duration: 200, easing: "ease-out" });
   const base = e.className.split(" ").filter((c) => c === "row" || c === "wide").join(" ");
   const cls = ["key", base, style, extra].filter(Boolean).join(" ") + state + (pressedEl === e ? " pressed" : "");
   if (e.className !== cls) e.className = cls;
@@ -209,7 +244,7 @@ function avail(id, ok) { const e = el(id); if (e.getAttribute("aria-disabled") !
 let shownLine = null;
 function listen() {
   const now = Date.now();
-  const down = (S.serverDown && now - S.serverDown < 60000) || (S.server && !S.server.ok);
+  const down = serverDown();
   let app = deafened ? "DEAFENED" : "READY", glyph = "glyph", line, cursor = false;
   if (talking) { app = "LISTENING"; glyph = "glyph live"; line = "Go ahead"; cursor = true; }
   else if (S.looking) { app = "LOOKING"; glyph = "glyph live"; line = "Looking"; cursor = true; }
@@ -219,7 +254,7 @@ function listen() {
     if (line.length > 110) line = firstSentence(line);
     cursor = line === "Where to?";
   }
-  setText("l-app", app); setCls("l-glyph", glyph);
+  setState("l-app", app); setCls("l-glyph", glyph);
   if (shownLine !== line) { shownLine = line; showLine(line, cursor); }
   showEl("l-cursor", cursor);
   showEl("l-server", Boolean(down));
@@ -251,10 +286,10 @@ function showLine(text, cursor) {   // Pip's words type in letter by letter; the
 const waveCols = [];
 let energy = 0;
 function drawWave(t) {
-  const down = (S.serverDown && Date.now() - S.serverDown < 60000) || (S.server && !S.server.ok);
+  const down = serverDown();
   if (GL.wave) {
     const level = NATIVE ? N.mic || 0 : micLevel;
-    const target = S.looking ? 0.35 : down ? 0.15 : talking ? Math.min(1, 0.12 + Math.max(0, level - 0.008) * 18) : 0;
+    const target = S.looking ? 0.35 : down ? 0.15 : talking ? Math.min(1, 0.12 + Math.max(0, level - 0.008) * 18) : deafened ? 0 : 0.14;   // at rest a small ripple, so the screen never looks frozen
     energy += (target - energy) * (target > energy ? 0.5 : 0.08);   // quick to rise, slow to fall
     GL.wave(reduced() ? 0 : t, { u_color: vec3(down ? css("--line") : css("--accent")), u_dim: vec3("#1A1C1A"), u_cols: 26, u_rows: 9, u_energy: energy });
     return;
@@ -276,6 +311,26 @@ function drawWave(t) {
       g.fillRect(x * (sq + gap), top + y * (sq + gap), sq, sq);
     }
   }
+}
+
+// Background (matrix.glsl, the design's fill on every screen): a faint dot grid with drifting data, in the same color
+// as the top line's glyph, so it always matches the foreground: pink, or red when something is wrong (offline, off
+// course, hazard, lost tracking). Brighter and faster while you talk; dim and slow when deafened or paused.
+// The color eases over ~0.6 s; it redraws at 30 fps (it moves slowly) and stands still with Reduce Motion.
+const bgNow = { color: null, k: 0.32, phase: 0, at: 0 };
+function backgroundLook() {   // [state color, strength, speed]
+  const color = document.querySelector(".screen.on .glyph.bad") ? "--bad" : "--accent";
+  if (talking) return [color, 0.4 + 0.25 * energy, 1.6];
+  if (deafened || S.paused) return [color, 0.2, 0.3];
+  return [color, 0.32, 1];
+}
+function drawBackground(ms) {
+  const still = reduced();
+  if (ms - bgNow.at < (still ? 500 : 33)) return;
+  const dt = Math.min(0.2, (ms - bgNow.at) / 1000), [color, k, speed] = backgroundLook(), ease = still ? 1 : 1 - Math.exp(-dt / 0.2), to = vec3(css(color));
+  bgNow.at = ms; bgNow.color = bgNow.color ? bgNow.color.map((v, i) => v + (to[i] - v) * ease) : to; bgNow.k += (k - bgNow.k) * ease;
+  if (!still) bgNow.phase += dt * speed;
+  GL.bg(bgNow.phase, { u_color: bgNow.color, u_spark: vec3(css("--fg")), u_base: vec3(css("--bg")), u_strength: bgNow.k, u_speed: 1 });
 }
 
 // ---------- 03 Guiding ----------
@@ -342,15 +397,20 @@ function guide() {
   const dTurn = l ? nextTurn(w, l).d : g && w.man[w.m] ? w.man[w.m].s - (w.s || 0) : null;
   const period = S.lastCue && S.lastCue.kind !== "on" ? Math.max(0.3, S.lastCue.interval * 2) : dTurn == null ? 2.2 : Math.max(0.4, Math.min(2.2, gps ? dTurn / 25 : dTurn / 4));
   setPeriod(el("g-arrow"), period);
-  setText("g-tag", tag); setCls("g-glyph", glyph);
+  setState("g-tag", tag); setCls("g-glyph", glyph);
   if (tag !== "ON COURSE") el("g-tag").getAnimations?.().forEach((a) => a.cancel());   // no pulse when off course
-  setHTML("g-arrow", icon(arrow, flip ? "flip" : "")); setCls("g-arrow", arrowCls);
+  const arrowHTML = icon(arrow, flip ? "flip" : ""), turned = el("g-arrow")._h !== undefined && el("g-arrow")._h !== arrowHTML;
+  setHTML("g-arrow", arrowHTML); setCls("g-arrow", arrowCls);
+  if (turned && !reduced()) {   // the new arrow turns into place from straight ahead (right turns clockwise)
+    const right = flip || /right/.test(arrow), left = !right && /left/.test(arrow);
+    el("g-arrow").animate([{ transform: `rotate(${right ? -60 : left ? 60 : 0}deg) scale(.85)`, opacity: 0.3 }, { transform: "none", opacity: 1 }], { duration: 300, easing: "cubic-bezier(.4, 0, .2, 1)" });
+  }
   setText("g-instr", instr); setCls("g-instr", "say " + sizeSay(instr) + (S.paused && !A ? " grey" : ""));
   const hasProg = remaining != null && total;
   showEl("g-prog", Boolean(hasProg));
   if (hasProg) {
     const [d, u] = m1(remaining), pct = Math.max(0, Math.min(1, 1 - remaining / total));
-    setText("g-dist", d); setText("g-unit", u); setText("g-pct", `${Math.round(pct * 100)}%`);
+    setRoll("g-dist", d); setText("g-unit", u); setText("g-pct", `${Math.round(pct * 100)}%`);
     fillSegs(Math.round(pct * 22));
   }
   setText("g-k1", k1); setText("g-v1", v1); setCls("g-v1", v1c); setText("g-v2", v2); setCls("g-v2", v2c); setText("g-k3", k3); setText("g-v3", v3);
@@ -377,6 +437,10 @@ function find() {
     Object.assign(box.style, { left: `${(0.5 + (f.dx || 0)) * 100}%`, top: `${(0.5 + (f.dy || 0)) * 100}%`, width: `${side * 100}%`, height: `${side * 100}%` });
     setText("f-tag", `${f.target.split(" ").at(-1)} ${Math.round((f.score || 0) * 100)}%`);
   }
+  const locked = Boolean(seen && f.move === "center");
+  if (locked && !box.locked && !reduced()) box.animate([{ transform: "translate(-50%, -50%) scale(1.15)" }, { transform: "translate(-50%, -50%)" }], { duration: 200, easing: "cubic-bezier(.34, 1.56, .64, 1)" });
+  if (locked && !box.locked) toNative({ type: "haptic", style: "success" });   // locked on: snaps in tight
+  box.locked = locked;
   const a = f.phase === "sweep" ? "Turn slowly" : seen ? noDot(f.lastSay || (f.move === "center" ? "Got it" : "")) || "Got it" : "Looking";
   setText("f-instr", a); setCls("f-instr", "say " + sizeSay(a));
 }
@@ -390,7 +454,7 @@ function search() {
   const labels = grocery ? ["LOOKING", "GOING TO AISLE", "IN AISLE", "CHECKING SHELF"] : ["LOOKING", "GOING TO DOOR", "AT DOOR", "CHECKING ROOM"];
   const fseen = f && f.move && now - f.seenAt < 1500;
   const step = m ? PHASE_STEP[m.phase] || 1 : fseen ? 4 : 3;
-  setText("s-app", `SEARCHING ${step}/4`);
+  setState("s-app", `SEARCHING ${step}/4`);
   setHTML("s-track", labels.map((t, i) => `<div class="${i + 1 < step ? "done" : i + 1 === step ? "now" : ""}"><i></i>${t}</div>`).join(""));
   // viewfinder: signs the camera read (where they are in the picture), and the target by its direction
   const vf = el("s-vf"); let boxes = "";
@@ -475,7 +539,7 @@ function teach() {
     const o0 = sv.pts.find((p) => p.gps)?.gps;
     map = { pts: sv.pts.map((p) => p.ar || (p.gps && o0 ? toLocal(o0, p.gps) : null)).filter(Boolean), live: false, name: sv.name };
   }
-  setText("t-app", app); setCls("t-app", appCls);
+  setState("t-app", app); setCls("t-app", appCls);
   setText("t-big", big); setCls("t-big", "say " + sizeSay(big));
   setText("t-chip-t", chip); showEl("t-chip", Boolean(chip));
   showEl("t-compass", ring);
@@ -665,6 +729,7 @@ function voiceKeys() {
 // ---------- loop ----------
 function tick() {
   const name = pick(); go(name);
+  document.body.classList.toggle("offline", serverDown());
   try {
     if (name === "listen") listen();
     else if (name === "guide") guide();
@@ -683,6 +748,7 @@ let waveAt = 0;
 (function frame(ms) {
   const t = ms / 1000, still = reduced();
   try {
+    if (GL.bg) drawBackground(ms);
     if (current === "start" && GL.cursor) GL.cursor(still ? 0 : t, { u_color: vec3(css("--accent")), u_rate: 1.1 });
     if (current === "listen") {
       if (GL.wave || ms - waveAt > 50) { waveAt = ms; drawWave(t); }
@@ -698,5 +764,5 @@ let waveAt = 0;
 })(0);
 initShaders(); initGlass(); textSize(); tick();
 // One line at startup so a phone's log shows why animations might be missing (Reduce Motion stops them, per the design).
-log("screen:", "reduce motion", reduced() ? "ON (animations stopped)" : "off", "· shaders", ["cursor", "wave", "f-vf", "s-vf"].map((k) => `${k} ${GL[k] ? "ok" : "off"}`).join(", "));
+log("screen:", "reduce motion", reduced() ? "ON (animations stopped)" : "off", "· shaders", ["bg", "cursor", "wave", "f-vf", "s-vf"].map((k) => `${k} ${GL[k] ? "ok" : "off"}`).join(", "));
 })();

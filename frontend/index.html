@@ -21,7 +21,8 @@
     --font: "Inter", -apple-system, sans-serif;                  /* the glass controls: keys, Hold to talk, Deafen, chips */
   }
   * { box-sizing: border-box; margin: 0; }
-  html, body { background: var(--bg); color: var(--fg); font-family: var(--mono); -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; }
+  html { background: var(--bg); }
+  html, body { color: var(--fg); font-family: var(--mono); -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; }
   body { min-height: 100dvh; overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
   button, input, select { font: inherit; color: inherit; }
   button { background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
@@ -32,11 +33,16 @@
   /* MOTION (Motion + Gestures frame). pulse.glsl = opacity swings between 1 and --low; --pp is half its period */
   @keyframes pz { from { opacity: 1; } to { opacity: var(--low, .25); } }
   canvas.gl { image-rendering: pixelated; }
+  /* Background (design: shaders/matrix.glsl on every screen): a faint data matrix in the state color (ui.js) */
+  #bg { position: fixed; inset: 0; width: 100%; height: 100%; z-index: -1; display: block; pointer-events: none; image-rendering: auto; }
 
   /* one screen at a time ("Content": padding 8 20 24, gap 12); screen change: slide up 12 px + fade, 180 ms */
   .screen { display: none; flex-direction: column; gap: 12px; min-height: 100dvh; max-width: 520px; margin: 0 auto;
             padding: calc(env(safe-area-inset-top) + 8px) 20px max(24px, env(safe-area-inset-bottom)); }
-  .screen.on { display: flex; animation: enter 180ms ease-out; }
+  .screen.on { display: flex; }
+  /* screens build in order: top line, then Pip's words, then the keys, 40 ms apart */
+  .screen.on > * { animation: enter 180ms ease-out backwards; }   /* backwards: nothing lingers after, which would stop the glass blur */
+  .screen.on > :nth-child(2) { animation-delay: 40ms; } .screen.on > :nth-child(3) { animation-delay: 80ms; } .screen.on > :nth-child(n+4) { animation-delay: 120ms; }
   @keyframes enter { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 
   /* Top Line: state glyph, state name, rule, → goal */
@@ -46,7 +52,12 @@
   .glyph.live { animation: pz .83s ease-in-out infinite alternate; --low: .25; }   /* live dot: blinks while the talk bar is held */
   .app { font-size: 15px; font-weight: 700; letter-spacing: 1.5px; white-space: nowrap; }
   .app.recog { animation: pz .83s ease-in-out infinite alternate; --low: .55; }   /* RECOGNIZING pulses until Pip knows the room */
-  .rule { flex: 1; height: 1px; background: var(--line); min-width: 12px; }
+  .rule { position: relative; flex: 1; height: 1px; background: var(--line); min-width: 12px; }
+  /* while Pip reaches its server, a pink dot runs along the rule every 6 s (body.offline stops it) */
+  .rule::after { content: ""; position: absolute; top: -3px; left: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 12px var(--accent);
+                 opacity: 0; animation: run 6s ease-in-out infinite; }
+  body.offline .rule::after { display: none; }
+  @keyframes run { 0% { left: 0; opacity: 0; } 4%, 19% { opacity: 1; } 23%, 100% { left: calc(100% - 7px); opacity: 0; } }
   .goal { color: var(--accent); font-size: 15px; font-weight: 600; letter-spacing: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; text-transform: uppercase; }
 
   .stage { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 22px; min-height: 0; }
@@ -69,10 +80,22 @@
   .oldline { position: absolute; pointer-events: none; }
   #wave { width: 100%; height: 96px; display: block; flex-shrink: 0; }
 
-  /* Liquid glass (design: shaders/liquid-glass.glsl on every control). ui.js draws each look once per control size into
-     --g-<look>; CSS picks the look per state, so a press shows at once. Until drawn, the look's plain color shows. */
+  /* Liquid glass (design: shaders/liquid-glass.glsl on every control). See-through, so the background moves behind it:
+     the backdrop is frosted (the shader's 10 px), the look's tint lies over it (--t-<look>, set by ui.js from the design's
+     tint and amount), and the shader's lit rim is drawn once per control size (--g-rim). Until set, plain colors show. */
   .key, #talk, #deafen, .chip, .place .go, .typebox, .typebox button {
-    background: var(--g-clear, none) center / 100% 100% no-repeat var(--glass-base); box-shadow: 0 6px 18px #00000052; font-family: var(--font); }
+    background: var(--g-rim, none) center / 100% 100% no-repeat var(--t-clear, var(--glass-base));
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); box-shadow: 0 6px 18px #00000052; font-family: var(--font); }
+  /* Glass shine: once, right after a screen's buttons build in, a soft light crosses them as one diagonal wave (--shine-at from ui.js) */
+  #talk, #deafen { position: relative; overflow: hidden; }
+  .key::after, #talk::after, #deafen::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+    background: linear-gradient(115deg, transparent 35%, var(--line) 50%, transparent 65%) 105% 0 / 250% 100% no-repeat; }
+  .screen.on .key::after, .screen.on #talk::after, .screen.on #deafen::after { animation: shine 900ms ease-in-out calc(300ms + var(--shine-at, 0ms)) backwards; }
+  @keyframes shine { from { background-position: 105% 0; } to { background-position: -5% 0; } }
+  /* Squish: a control shrinks under the finger, then springs back a little past full size */
+  .key, #talk, #deafen, .place .go { transition: transform 280ms cubic-bezier(.34, 1.56, .64, 1); }
+  .key.pressed, #deafen.pressed, .place .go.pressed { transform: scale(.96); transition: transform 60ms ease-out; }
+  #talk.on { transform: scale(.98); transition: transform 60ms ease-out; }
   /* Pad: glass keys 10 px apart (component "Key"; states from the Button States frame) */
   .pad { display: flex; flex-direction: column; gap: 10px; width: 100%; flex-shrink: 0; }
   .krow { display: flex; gap: 10px; }
@@ -83,9 +106,17 @@
   .key.row { height: 64px; flex-direction: row; justify-content: flex-start; align-items: center; gap: 12px; padding: 0 16px; }
   .key.wide { flex: none; width: 100%; height: 64px; flex-direction: row; justify-content: center; align-items: center; gap: 12px; padding: 0 16px; border-radius: 32px; }
   .key.wide .ic { width: 20px; height: 20px; } .key.wide b { font-size: 17px; letter-spacing: -0.2px; }
-  .key.light, .key.done { background-image: var(--g-white, none); background-color: var(--fg); color: var(--ink); }   /* Done: white flash with a check for 0.6 s */
-  .key.hot, .key.pressed { background-image: var(--g-pink, none); background-color: var(--accent); color: var(--ink); }   /* Pressed: flips to pink the instant a finger lands */
-  .key.work { background-image: var(--g-work, none); color: var(--accent); }   /* Working: says what Pip is doing; a pink light sweeps through */
+  .key.light, .key.done { background-color: var(--t-white, var(--fg)); color: var(--ink); }   /* Done: white flash with a check for 0.6 s */
+  .key.hot { background-color: var(--t-pink, var(--accent)); color: var(--ink); }   /* Go, Resume */
+  /* Pressed: pink spreads from where the finger landed (--px, --py from ui.js) in 160 ms, and fades after release */
+  .key.pressed { color: var(--ink); }
+  .key::before { content: ""; position: absolute; left: var(--px, 50%); top: var(--py, 50%); width: 440px; height: 440px; margin: -220px 0 0 -220px; border-radius: 50%;
+    background: var(--t-pink, var(--accent)); pointer-events: none; transform: scale(0); opacity: 0; transition: opacity 200ms ease-out, transform 0s 200ms; }
+  .key.pressed::before { transform: none; opacity: 1; transition: transform 160ms ease-out, opacity 0s; }
+  /* Done: the check draws itself left to right (the label rolls in, ui.js) */
+  .key.done .ic { animation: reveal 240ms ease-out both; }
+  @keyframes reveal { from { clip-path: inset(0 100% 0 0); } }
+  .key.work { background-color: var(--t-work, var(--glass-base)); color: var(--accent); }   /* Working: says what Pip is doing; a pink light sweeps through */
   .key canvas.sweep { position: absolute; inset: 0; width: 100%; height: 100%; mix-blend-mode: screen; }   /* adds light on top of the glass */
   .key.na { opacity: .4; }                                         /* Unavailable: dimmed, says why */
   /* Dock (Listening): Places · Setup */
@@ -99,7 +130,7 @@
   #talk { flex: 1; min-width: 0; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }   /* held, not tapped */
   #talk .ic, #deafen .ic { width: 20px; height: 20px; }
   #talk b, #deafen b { font-size: 17px; font-weight: 600; letter-spacing: -0.2px; }
-  #talk.on, #deafen.on, #deafen.pressed { background-image: var(--g-pink, none); background-color: var(--accent); color: var(--ink); }
+  #talk.on, #deafen.on, #deafen.pressed { background-color: var(--t-pink, var(--accent)); color: var(--ink); }
 
   /* Readout: KEY ········ VALUE */
   .rows { display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; }
@@ -140,7 +171,8 @@
   .vf canvas.gl { position: absolute; inset: 0; width: 100%; height: 100%; }
   .vf.gl { background-image: none; } .vf.gl .scan { display: none; }
   @keyframes scan { from { top: 0; } to { top: 100%; } }
-  .vf .box { position: absolute; outline: 2px solid var(--accent); outline-offset: -1px; transform: translate(-50%, -50%); }
+  .vf .box { position: absolute; outline: 2px solid var(--accent); outline-offset: -1px; transform: translate(-50%, -50%);
+             transition: left 120ms ease-out, top 120ms ease-out, width 120ms ease-out, height 120ms ease-out; }   /* glides to where the object moved */
   .vf .box.target { animation: pz var(--pp, .63s) ease-in-out infinite alternate; --low: .4; }   /* pulses faster when closer */
   .vf .box::after { content: ""; position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; margin: -4px; border-radius: 50%; background: var(--accent); }
   .vf .box.sign { outline-color: var(--fg); } .vf .box.sign::after { display: none; }
@@ -171,7 +203,7 @@
   .map { width: 100%; height: 170px; background: var(--panel); display: block; flex-shrink: 0; }
 
   /* Say Chip: what you can say */
-  .chip { display: inline-flex; align-items: center; gap: 10px; padding: 12px 16px; border-radius: 24px; background-image: var(--g-chip, none); max-width: 100%; }
+  .chip { display: inline-flex; align-items: center; gap: 10px; padding: 12px 16px; border-radius: 24px; background-color: var(--t-chip, var(--glass-base)); max-width: 100%; }
   .chip .ic { width: 18px; height: 18px; color: var(--accent); }
   .chip span { font-size: 16px; font-weight: 500; letter-spacing: -0.2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -187,9 +219,11 @@
   .row > .ic { width: 18px; height: 18px; color: var(--dim); }
   .row input { background: none; border: 0; outline: 0; text-align: right; font-weight: 700; min-width: 0; flex: 1; }
   .row select { position: absolute; inset: 0; opacity: 0; width: 100%; }
-  .switch { width: 56px; height: 32px; padding: 4px; display: flex; justify-content: flex-start; background: var(--line); border-radius: 16px; flex-shrink: 0; }
-  .switch i { width: 30px; height: 24px; background: var(--fg); border-radius: 12px; }
-  .switch.on { justify-content: flex-end; background: var(--accent); }
+  .switch { width: 56px; height: 32px; padding: 4px; display: flex; background: var(--line); border-radius: 16px; flex-shrink: 0; transition: background-color 200ms ease-out; }
+  .switch i { width: 30px; height: 24px; background: var(--fg); border-radius: 12px; transition: transform 260ms cubic-bezier(.34, 1.56, .64, 1), width 120ms ease-out; }
+  .switch.on { background: var(--accent); }
+  .switch.on i { transform: translateX(18px); }
+  .row:active .switch i { width: 38px; } .row:active .switch.on i { transform: translateX(10px); }   /* the knob stretches under the finger */
   .sect { display: flex; align-items: center; gap: 8px; padding: 14px 0 6px; font-size: 15px; flex-shrink: 0; }
   .sect span { color: var(--dim); letter-spacing: 2px; }
   .sect b { color: var(--accent); font-weight: 700; letter-spacing: 1px; }
@@ -198,17 +232,17 @@
   .place .nm b { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .place .nm span { color: var(--dim); font-size: 15px; letter-spacing: 1px; text-transform: uppercase; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .place .go { height: 48px; padding: 0 18px; display: flex; align-items: center; justify-content: center; gap: 6px; border-radius: 24px;
-               background-image: var(--g-pink, none); background-color: var(--accent); color: var(--ink); flex-shrink: 0; }
+               background-color: var(--t-pink, var(--accent)); color: var(--ink); flex-shrink: 0; }
   .place .go b { font-family: var(--mono); font-size: 17px; font-weight: 800; }
   .place .go .ic { width: 18px; height: 18px; }
-  .place .go.pressed { background-image: var(--g-white, none); background-color: var(--fg); }
+  .place .go.pressed { background-color: var(--t-white, var(--fg)); }
   .empty { color: var(--dim); font-size: 15px; padding: 14px 0; }
   .offscreen { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
   .typebox { display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 8px 0 20px; border-radius: 28px; flex-shrink: 0; }
   .typebox input { flex: 1; min-width: 0; background: none; border: 0; outline: 0; font-family: var(--mono); font-size: 15px; font-weight: 500; color: var(--fg); -webkit-user-select: text; user-select: text; }
   .typebox input::placeholder { color: var(--dim); }
   .typebox > .ic { width: 20px; height: 20px; color: var(--dim); }
-  .typebox button { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 20px; background-image: var(--g-send, none); }
+  .typebox button { width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 20px; background-color: var(--t-send, var(--glass-base)); }
   .typebox button .ic { width: 18px; height: 18px; }
   .foot { color: var(--dim); font-size: 15px; flex-shrink: 0; }
   #log { flex: 1; min-height: 200px; overflow-y: auto; background: var(--panel); outline: 1px solid var(--line); outline-offset: -1px; padding: 14px;
@@ -221,6 +255,12 @@
   #scr-start { justify-content: flex-end; gap: 40px; padding-bottom: max(28px, env(safe-area-inset-bottom)); cursor: pointer; }
   .word { display: flex; align-items: flex-end; gap: 6px; font-size: 168px; font-weight: 800; letter-spacing: -10px; line-height: 168px; }
   .word .cursor { width: 56px; height: 124px; margin-bottom: 14px; }
+  /* p, i, p drop in 70 ms apart with a small bounce, then the cursor appears */
+  .word .letters span { display: inline-block; animation: drop 260ms cubic-bezier(.34, 1.56, .64, 1) both; }
+  .word .letters span:nth-child(2) { animation-delay: 70ms; } .word .letters span:nth-child(3) { animation-delay: 140ms; }
+  .word .cursor.gl { animation: fadein 150ms ease-out 320ms both; }
+  @keyframes drop { from { opacity: 0; transform: translateY(-48px); } }
+  @keyframes fadein { from { opacity: 0; } }
   #start { width: 100%; height: 168px; padding: 22px; background: var(--accent); color: var(--ink); display: flex; flex-direction: column; justify-content: space-between; }
   #start .kt { align-self: flex-end; } #start .kt .ic { width: 32px; height: 32px; }
   #start b { font-size: 56px; font-weight: 800; letter-spacing: -2.5px; line-height: 1; }
@@ -232,10 +272,11 @@
 </style>
 </head>
 <body>
+<canvas id="bg" aria-hidden="true"></canvas>
 
 <!-- 01 Start -->
 <section class="screen on" id="scr-start" aria-label="Start">
-  <div class="word" aria-hidden="true">pip<canvas class="cursor" id="cursor"></canvas></div>
+  <div class="word" aria-hidden="true"><span class="letters"><span>p</span><span>i</span><span>p</span></span><canvas class="cursor" id="cursor"></canvas></div>
   <button id="start" aria-label="Start Pip"><span class="kt"><script>document.write(icon("arrow-up-right"))</script></span><b>Start</b></button>
 </section>
 
