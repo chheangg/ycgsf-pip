@@ -23,6 +23,9 @@ graphify-out/  code knowledge graph (see CLAUDE.md)
 run.sh         serves frontend/ on http://localhost:5173
 ```
 
+The model's [indoor_workflow tool](docs/tools/indoor.md) reads signs, identifies sections,
+recalls explicitly saved place/floor knowledge, and prepares verified local routes through the existing tool dispatcher.
+
 ## How it works
 
 ```mermaid
@@ -59,8 +62,9 @@ flowchart TD
    for Pip (you talking to someone else, the TV) are dropped.
 2. **The brain decides.** Qwen3-14B gets what you said, what the phone knows (GPS, heading, saved spots, taught
    routes) and a set of tools: find places, get a route, follow a taught route, record a route, go to a room or
-   object, find an object, describe, look and plan, where am I, go back, and get a Walmart aisle for known store
-   and item IDs through `get_walmart_location`. It can call up to 5 tools per turn, then
+   object, find an object, describe, look and plan, where am I, go back, look up Home Depot products and
+   aisle/bay labels through [home_depot](docs/hackathon/tools/homedepot.md), and get a Walmart aisle for known store and item IDs through
+   `get_walmart_location`. It can call up to 5 tool rounds per turn, then
    replies with one sentence and at most one action for the app. For anything that moves you, it tells you the
    plan and waits for "yes".
 3. **The long-term planner picks the next point.**

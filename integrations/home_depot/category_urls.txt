@@ -1,0 +1,28 @@
+# Department links from Home Depot navigation, 2026-10-25.
+# Broad starting categories only. Split capped categories into narrower/filter URLs.
+https://www.homedepot.com/b/Appliances/N-5yc1vZbv1w
+https://www.homedepot.com/b/Bath/N-5yc1vZbzb3
+https://www.homedepot.com/b/Window-Treatments/N-5yc1vZar4w
+https://www.homedepot.com/b/Lumber-Composites/N-5yc1vZbqpg
+https://www.homedepot.com/b/Moulding-Millwork/N-5yc1vZaq4y
+https://www.homedepot.com/b/Cleaning/N-5yc1vZbqsi
+https://www.homedepot.com/b/Home-Decor/N-5yc1vZas6p
+https://www.homedepot.com/b/Lighting/N-5yc1vZbvn5
+https://www.homedepot.com/b/Doors-Windows/N-5yc1vZaqih
+https://www.homedepot.com/b/Flooring/N-5yc1vZaq7r
+https://www.homedepot.com/b/Hardware/N-5yc1vZc21m
+https://www.homedepot.com/b/Heating-Venting-Cooling/N-5yc1vZc4k8
+https://www.homedepot.com/b/Outdoors-Garden-Center/N-5yc1vZbx6k
+https://www.homedepot.com/b/Outdoors/N-5yc1vZbx82
+https://www.homedepot.com/b/Paint/N-5yc1vZar2d
+https://www.homedepot.com/b/Plumbing/N-5yc1vZbqew
+https://www.homedepot.com/b/Holiday-Decorations/N-5yc1vZbd6e
+https://www.homedepot.com/b/Smart-Home/N-5yc1vZc1jw
+https://www.homedepot.com/b/Storage-Organization/N-5yc1vZas7e
+https://www.homedepot.com/b/Tools/N-5yc1vZc1xy
+https://www.homedepot.com/b/Automotive/N-5yc1vZc8o1
+https://www.homedepot.com/b/Furniture/N-5yc1vZc7pc
+https://www.homedepot.com/b/Baby-Kids/N-5yc1vZ2fkpfui
+https://www.homedepot.com/b/Building-Materials/N-5yc1vZaqns
+https://www.homedepot.com/b/Electrical/N-5yc1vZarcd
+https://www.homedepot.com/b/Kitchen/N-5yc1vZar4i

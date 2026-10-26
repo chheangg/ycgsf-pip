@@ -24,6 +24,9 @@ struct PipWebView: UIViewRepresentable {
         cfg.userContentController.add(context.coordinator, name: "pip")
         // Tell the page it's running inside the app, before any of its scripts run.
         cfg.userContentController.addUserScript(WKUserScript(source: "window.PIP_NATIVE = true;", injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        let deviceID = UserDefaults.standard.string(forKey: "pip.indoor.device") ?? UUID().uuidString
+        UserDefaults.standard.set(deviceID, forKey: "pip.indoor.device")
+        cfg.userContentController.addUserScript(WKUserScript(source: "window.PIP_DEVICE_ID = '\(deviceID)';", injectionTime: .atDocumentStart, forMainFrameOnly: true))
         #if DEBUG
         // Screen testing in the Simulator (debug builds only): launch with SIMCTL_CHILD_PIP_DEMO_JS="<js>" to run
         // that script after the page loads, e.g. to open a screen without walking anywhere.
@@ -127,6 +130,36 @@ struct PipWebView: UIViewRepresentable {
                 sensors.ar.readText { lines in
                     let json = (try? JSONSerialization.data(withJSONObject: lines)).flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
                     DispatchQueue.main.async { self.js("window.pipNative && window.pipNative.pinned(\(id), \(json))") }
+                }
+            case "indoorObservation":
+                let id = body["id"] as? Int ?? 0
+                guard sensors.useAR else { js("window.pipNative.pinned(\(id), null)"); break }
+                sensors.ar.indoorObservation { result in
+                    let json = result.flatMap { try? JSONSerialization.data(withJSONObject: $0) }
+                        .flatMap { String(data: $0, encoding: .utf8) } ?? "null"
+                    DispatchQueue.main.async { self.js("window.pipNative.pinned(\(id), \(json))") }
+                }
+            case "indoorPath":
+                let id = body["id"] as? Int ?? 0
+                guard sensors.useAR, sensors.ar.tracking == "ok", let p = sensors.ar.pose,
+                      let frame = body["frame_id"] as? String, frame == sensors.ar.frameId,
+                      let x = body["x"] as? Double, let z = body["z"] as? Double,
+                      x.isFinite, z.isFinite else { js("window.pipNative.pinned(\(id), null)"); break }
+                let map = sensors.ar.map
+                let approach = body["approach"] as? Bool ?? false
+                let viewpoint = body["viewpoint"] as? Bool ?? false
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let from = SIMD2(p.x, p.z), target = SIMD2(Float(x), Float(z))
+                    let points = approach ? map.approach(from: from, to: target, viewpoint: viewpoint) : map.path(from: from, to: target, strict: true)
+                    let payload: [[String: Double]]? = points.map { $0.map { ["x": Double($0.x), "z": Double($0.y)] } }
+                    let json = payload.flatMap { try? JSONSerialization.data(withJSONObject: $0) }
+                        .flatMap { String(data: $0, encoding: .utf8) } ?? "null"
+                    DispatchQueue.main.async {
+                        guard self.sensors.ar.frameId == frame, self.sensors.ar.tracking == "ok" else {
+                            self.js("window.pipNative.pinned(\(id), null)"); return
+                        }
+                        self.js("window.pipNative.pinned(\(id), \(json))")
+                    }
                 }
             case "gps":
                 sensors.startGPS()

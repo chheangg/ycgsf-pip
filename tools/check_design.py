@@ -26,8 +26,8 @@ for name, value in tokens["colors"].items():
     if have != value.lower():
         problems.append(f"color --{name}: design {value}, code {have or 'missing'}")
 
-# 2. Fonts: Inter for the glass controls, JetBrains Mono for the rest
-for key in ("font", "mono"):
+# 2. Font: JetBrains Mono everywhere, buttons included
+for key in ("mono",):
     if tokens[key].lower() not in html.lower():
         problems.append(f"{key}: design uses {tokens[key]}, index.html never mentions it")
 
