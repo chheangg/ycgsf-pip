@@ -1,30 +1,59 @@
+<div align="center">
+
+<img src="design/icon/app-icon.png" width="128" alt="Pip app icon: the word pip in pink glass on black">
+
 # Pip
 
-Pip is a walking guide for blind people. You put on headphones, hold an iPhone in front of you and say where you
-want to go. Pip answers in a short sentence, then guides you mostly with taps. A tap in your left ear means turn
-left, and the taps speed up as you get closer to facing the right way. When you're on course it goes quiet or
-ticks softly in both ears. It talks only when something changes: a turn, a door, something in your way, arriving.
+**A walking guide for blind people, on the iPhone you already own.**
 
-It works indoors (find the restroom in a building you've never been in, walk a route you taught it at home) and
-outdoors (walk to a named place with GPS, then find the entrance with the camera).
+[![Winner: Best Open-Source AI Project](https://img.shields.io/badge/%F0%9F%8F%86_Winner-Best_Open--Source_AI_Project-FF5CA8?style=for-the-badge&labelColor=07070A)](https://events.mlh.io/events/15194-hacktoberfest-hack-day-san-diego-x-spacexsi)
 
-The name of the project is ycgsf, short for "you can go so far". Built at Hacktoberfest Hack Day San Diego. This
-is a prototype, not a mobility aid. Use it with your cane or dog, not instead of them.
+![iOS 17+](https://img.shields.io/badge/iOS-17%2B-07070A?style=flat-square&logo=apple)
+![Open-weight models](https://img.shields.io/badge/models-open--weight-07070A?style=flat-square&logo=huggingface)
+![One RTX 4090](https://img.shields.io/badge/runs_on-one_RTX_4090-07070A?style=flat-square&logo=nvidia)
+![MIT](https://img.shields.io/badge/license-MIT-07070A?style=flat-square)
 
-## What's in this repo
+[Demo](#demo-the-basement-to-target) · [How it works](#how-it-works) · [Models](#models) · [Run it](#run-it)
 
-```
-frontend/      the app itself: index.html, app.js (all guiding logic), ui.js (screens), icons.js, shaders.js
-ios/           iPhone shell: a WKWebView that runs frontend/, plus ARKit + LiDAR, camera, mic, GPS and native audio
-server/        the model server for the RTX 4090 (app.py), its Windows start and restart scripts
-design/        the pen.dev design (untitled.pen), its tokens and GLSL shaders
-tools/         deploy.sh (server to the 4090), check_design.py (does the app match the design?), export_shaders.py
-graphify-out/  code knowledge graph (see CLAUDE.md)
-run.sh         serves frontend/ on http://localhost:5173
-```
+<br>
 
-The model's [indoor_workflow tool](docs/tools/indoor.md) reads signs, identifies sections,
-recalls explicitly saved place/floor knowledge, and prepares verified local routes through the existing tool dispatcher.
+<img src="docs/media/ask-and-go.gif" width="250" alt="Pip listening, then showing the walk plan with Go and Cancel">&nbsp;&nbsp;
+<img src="docs/media/walk-to-target.gif" width="250" alt="Pip guiding: the distance counts down to Target while the camera labels people and bikes">&nbsp;&nbsp;
+<img src="docs/media/obstacle-lidar.gif" width="250" alt="The camera spots a post in the path, then a LiDAR 3D view shows it in red">
+
+<sub><b>Ask, then go</b> · <b>Guided to Target</b> (8x) · <b>Something in the path</b>, confirmed with LiDAR</sub>
+
+<sub>Winner of Best Open-Source AI Project at <a href="https://events.mlh.io/events/15194-hacktoberfest-hack-day-san-diego-x-spacexsi">Hacktoberfest Hack Day San Diego x SpaceXSI</a>, UC San Diego, October 25, 2026</sub>
+
+</div>
+
+<br>
+
+Put on headphones, hold the phone in front of you and say where you want to go. Pip answers in one short
+sentence, then guides you mostly with **taps**: a tap in your left ear means turn left, and the taps speed up as you
+come around to the right way. On course, it goes quiet. It speaks only when something changes: a turn, a door,
+something in your way, arriving.
+
+- 🗣️ **Talk to it.** "Take me to Target." Pip finds the place, says the plan and waits for your "yes".
+- 🎧 **Guided by sound.** Taps in each ear, clock-face turns ("to 10 o'clock") and step counts, plus a buzz in your hand when you're lined up.
+- 👀 **It sees the path.** The camera labels people, bikes and posts; LiDAR confirms what's really in your way, and Pip routes around it.
+- 🏢 **Indoors and out.** Find the restroom in a building you've never been in, walk a route you taught it, or walk to a named place with GPS.
+- 🔓 **Open models, no cloud bill.** Every model is open-weight and runs on one gaming GPU. The models propose; sensors and code decide.
+
+> [!IMPORTANT]
+> Pip is a prototype, not a mobility aid. Use it with your cane or dog, not instead of them.
+
+## Demo: The Basement to Target
+
+Our hackathon demo: from The Basement at UC San Diego to the Target in Price Center, with the walker's eyes
+covered. The phone clips above are Pip's own screen recordings (the REC button in the app).
+
+<p align="center">
+  <img src="docs/media/walking.gif" width="300" alt="A walker with covered eyes follows Pip along the sidewalk to Target">&nbsp;&nbsp;
+  <img src="docs/media/arrived-at-target.jpg" width="300" alt="The walker at the Target sign">
+  <br>
+  <sub><b>The walk, from behind</b> (8x) · <b>Arrived</b></sub>
+</p>
 
 ## How it works
 
@@ -56,6 +85,12 @@ flowchart TD
     V --> ST
     ST --> O --> U
 ```
+
+In short: you talk, a tool-calling brain picks the job, a long-term planner chooses where to go next and a
+short-term planner gets you there with taps, while the phone's sensors and the vision models keep it honest.
+
+<details>
+<summary><b>Step by step</b></summary>
 
 1. **You talk.** The phone's mic is always on. It cuts speech into phrases by loudness and sends each one to the
    server as 16 kHz audio. Distil-Whisper turns it into text. Fillers ("um", "okay") and speech that isn't meant
@@ -103,6 +138,8 @@ flowchart TD
    for a restroom) in 3 frames in a row and the vision model agrees you're inside, not just looking in through a
    doorway. Wrong room, all walls, or going in circles sends it back to the long-term planner to retrace and try
    another way. After 3 backtracks or 6 look-arounds it asks you.
+
+</details>
 
 ## Models
 
@@ -218,9 +255,25 @@ P pause, T test the taps (left, then right), ←/→ "I turned".
 - Route following borrows a lot from [Clew](https://github.com/occamLab/Clew). The turn words, tap rates and
   progress tones follow published studies with blind users; the references are in comments in `frontend/app.js`.
 
+## What's in this repo
+
+```
+frontend/      the app itself: index.html, app.js (all guiding logic), ui.js (screens), icons.js, shaders.js
+ios/           iPhone shell: a WKWebView that runs frontend/, plus ARKit + LiDAR, camera, mic, GPS and native audio
+server/        the model server for the RTX 4090 (app.py), its Windows start and restart scripts
+design/        the pen.dev design (untitled.pen), its tokens and GLSL shaders
+tools/         deploy.sh (server to the 4090), check_design.py (does the app match the design?), export_shaders.py
+graphify-out/  code knowledge graph (see CLAUDE.md)
+docs/          tool docs, demo media, hackathon notes
+run.sh         serves frontend/ on http://localhost:5173
+```
+
+The model's [indoor_workflow tool](docs/tools/indoor.md) reads signs, identifies sections,
+recalls explicitly saved place/floor knowledge, and prepares verified local routes through the existing tool dispatcher.
+
 ## License
 
 MIT, see [LICENSE](LICENSE). The models keep their own licenses (table above). YOLO11 is AGPL-3.0, so check that
 before you ship anything built on it.
 
-Built with Claude Code.
+The repo name, ycgsf, is short for "you can go so far". Built with Claude Code.
