@@ -2503,7 +2503,9 @@ async function lowScan(blob) {   // the open-vocabulary detector, once a second,
   try {
     const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("labels", LOW_THINGS);
     const r = await (await fetch(SERVER + "/scan", { method: "POST", body: fd, signal: AbortSignal.timeout(4000) })).json();
-    const [label, h] = Object.entries(r.hits || {}).filter(([, x]) => x.score >= 0.2 && Math.abs(x.dx) < 0.2 && x.dy > 0.05).sort((a, b) => b[1].score - a[1].score)[0] || [];
+    // scores run 0.3-0.7 even for tiny far things (QA on 25 street photos): close = at least 2% of the frame, in the lower half
+    const [label, h] = Object.entries(r.hits || {}).filter(([, x]) => x.score >= 0.3 && x.size >= 0.02 && Math.abs(x.dx) < 0.2 && x.dy > 0.05)
+      .sort((a, b) => b[1].score - a[1].score)[0] || [];
     if (!label || !guiding() || Date.now() - hazardSaidAt < 5000) return;
     hazardSaidAt = Date.now(); obstacleSeen(label);
     const d = N.depth, side = d ? (d.left >= d.right ? "left" : "right") : h.dx < 0 ? "right" : "left";
@@ -2564,8 +2566,11 @@ async function localLoop() {
         // In your path = box centered ahead with its bottom in the lower part of the picture (~2-3 m off), so low things
         // like a hydrant get a warning before they drop out of LiDAR's middle band (trip 17:0x: boxed, then walked into).
         const inPath = (b) => { const cx = (b.box[0] + b.box[2]) / 2; return cx > PATH_X[0] && cx < PATH_X[1] && b.box[3] > PATH_LOW && b.conf >= 0.35; };
-        const pathBox = (r.boxes || []).find((b) => OBSTACLE_LABELS.test(b.label) && inPath(b));
-        const near = pathBox ? { label: pathBox.label } : r.hazards.find((h) => h.near && h.side === "ahead");
+        // The user's own body (QA on trip photos): legs at the bottom edge with the phone tilted down, or an arm or
+        // body across the lens, which comes back as a "person" wider than 85% of the frame. A real person ahead is narrower.
+        const ownLegs = (b) => b.label === "person" && ((b.box[1] > 0.35 && b.box[3] > 0.97) || b.box[2] - b.box[0] > 0.85);
+        const pathBox = (r.boxes || []).find((b) => OBSTACLE_LABELS.test(b.label) && inPath(b) && !ownLegs(b));
+        const near = pathBox ? { label: pathBox.label } : r.hazards.find((h) => h.near && h.side === "ahead" && h.label !== "person");   // no box: can't tell a person from your own arm
         if (!near && guiding() && Date.now() - (S.lowScanAt || 0) > LOW_SCAN_MS) lowScan(blob);
         // Trip 17:0x: the detector boxed a fire hydrant and the user still walked into it: on the phone only LiDAR
         // warned, and a low hydrant drops out of LiDAR's middle band as you get close. The detector speaks too now.
