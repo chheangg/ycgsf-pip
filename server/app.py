@@ -397,8 +397,6 @@ How you work:
   way for next time (learn_route_start / learn_route_end).
 - OUTDOORS use find_places (nearest restroom, water, entrance, bus stop, cafe, a named building...) and
   get_route, then summarize: name, distance, rough turns, and ask to start.
-- A room somewhere else in the building (restroom, kitchen, bedroom, lobby) is a trip: plan it, ask once,
-  then leave_here with that room as the goal, one room at a time.
 - While they're being guided (navigating_to is set) or on a trip: "dead end", "there's a wall", "I'm stuck",
   "it's blocked", "I can't go this way" -> blocked. Don't search for the place again.
 - Small tasks need no plan. Call the tool immediately in the same turn:
@@ -429,28 +427,20 @@ How you work:
 - TAUGHT ROUTES: the status lists them in taught_routes. If that list is empty, you know NO routes:
   never say you know the way. Only if a listed route matches (bathroom ~ restroom ~ toilet) may you
   propose it, naming its real start, and call follow_saved_route when they confirm.
-- No taught route indoors: for sections try indoor_workflow first; otherwise offer two options in one sentence: find it with the camera (room by room
-  with leave_here; it only says they've arrived when it sees the room, e.g. a toilet) or learn the way
-  once (learn_route_start). A door is not a room: never say they've arrived because a door was found.
+- No taught route indoors: for sections try indoor_workflow first; otherwise offer two options in one sentence: find
+  it with the camera (go_to: door by door, it only says they've arrived when it sees the room, e.g. a toilet) or learn
+  the way once (learn_route_start). A door is not a room: never say they've arrived because a door was found.
 - When the user agrees to what you proposed ("yes", "ok", "go", "sure", "use the camera"), call the
   matching tool now. Don't ask again.
 - "Learn / remember the way to X" -> call learn_route_start right away. "We're here" while learning ->
   learn_route_end.
 - Once a tool has started guidance this turn, confirm in a few words; the app speaks every step, so
   never invent directions. Never say you're starting anything unless you called that tool this turn.
-- Getting somewhere in this room you can't reach in one step (the couch, the window, a shelf across the
-  room), or the last meters of a trip -> go_to. Pointing a hand at something within reach (keys on the
+- Getting somewhere you can't reach in one step (a room, the couch, the front door, a shelf across the
+  room) -> go_to. Pointing a hand at something within reach (keys on the
   table, a cup) -> find_object.
-- ROOM BY ROOM: to get somewhere beyond the room they're in (another room, the lobby, the exit, "get me out
-  of here", a place outside), call leave_here with that goal. It does ONE room: Pip walks them out of this
-  room into the next space and stops there. start_navigation also works from inside a building (the app
-  walks them out first), so never tell them to go outside on their own.
-- Lines starting with (app) are reports from the app when a step of the trip is done, not the user. Decide
-  the next step toward the trip's goal right away; they already agreed, so don't ask again. Out of a room
-  but not there yet -> leave_here again with the same goal. In the goal room, or it's right there -> go_to
-  with the goal (it walks the last meters and confirms by seeing it). Outside and the goal is a place ->
-  get_route then start_navigation with the trip's place_id. At the goal -> say so in a few words, call
-  nothing. If the reports show no progress (same kind of space again and again), ask one short question.
+- "Get me out of here", "where's the exit": ask where they want to go; outside places go by GPS route
+  (find_places, get_route, start_navigation). start_navigation works from inside a building.
 - One or two sentences per reply."""
 
 NOMINATIM_WORD = {  # Nominatim "special phrases": fast category search, works when Overpass is overloaded
@@ -484,15 +474,11 @@ TOOLS = [{"type": "function", "function": f} for f in [
     {"name": "learn_route_start", "description": "Start recording a route the user will walk now, e.g. from the couch to the bathroom.",
      "parameters": {"type": "object", "properties": {"start": {"type": "string"}, "destination": {"type": "string"}}, "required": ["destination"]}},
     {"name": "learn_route_end", "description": "The user arrived: save the recorded route.", "parameters": {"type": "object", "properties": {}}},
-    {"name": "go_to", "description": "Camera-guided walk to a target you can't reach in one step: a room (restroom, kitchen, bedroom, the lobby) or a spot or object (the couch, the fridge, the front door, a shelf). A room elsewhere in the building is walked room by room (you get an (app) report after each room and decide again); the last stretch verifies by SEEING the target (or proof of the room: a toilet for a restroom, a stove for a kitchen). Outside, use get_route/start_navigation first; the final approach to the entrance happens automatically.",
+    {"name": "go_to", "description": "Camera-guided walk to a target you can't reach in one step: a room (restroom, kitchen, bedroom, the lobby) or a spot or object (the couch, the fridge, the front door, a shelf). It verifies by SEEING the target (or proof of the room: a toilet for a restroom, a stove for a kitchen). Outside, use get_route/start_navigation first; the final approach to the entrance happens automatically.",
      "parameters": {"type": "object", "properties": {
          "room": {"type": "string", "description": "the target: a room or a thing/place, e.g. restroom, kitchen, couch, front door"},
          "proof": {"type": "array", "items": {"type": "string"}, "description": "objects that prove it's that room (optional; defaults exist for common rooms)"}},
          "required": ["room"]}},
-    {"name": "leave_here", "description": "ONE ROOM of a trip: get the user out of the room or space they're in, into the next one, on the way to a goal beyond it (another room, the lobby, the exit, or a place outside). They turn around once so Pip maps the room and reads signs; Pip picks a real door or opening (toward the goal when it can tell), marks the spot, walks them through it and measures whether they got closer (if not: back to the mark, try the next way). It stops in the next space and you get an (app) report: then decide again.",
-     "parameters": {"type": "object", "properties": {
-         "goal": {"type": "string", "description": "where the trip ends: a room ('restroom', 'kitchen', 'the lobby'), 'outside', or a place's name"},
-         "place_id": {"type": "string", "description": "optional: the place from find_places they're heading to"}}}},
     {"name": "find_object", "description": "ORIENT ONLY: point the user's hand or camera at one object with 'left left', 'up up' (keys, cup, door handle, chair). It does not walk anywhere and does not prove which room is which.",
      "parameters": {"type": "object", "properties": {"object": {"type": "string"}}, "required": ["object"]}},
     {"name": "describe_surroundings", "description": "Say what the camera sees right now.", "parameters": {"type": "object", "properties": {}}},
@@ -522,9 +508,6 @@ TOOLS = [{"type": "function", "function": f} for f in [
 # Whisper writes store names in lowercase ("find me the target at UCSD"), and the brain then reads a plain word.
 BRANDS = re.compile(r"\b(target|walmart|costco|starbucks|cvs|walgreens|ralphs|vons|safeway|trader joe'?s|whole foods|"
                     r"mcdonald'?s|chipotle|in-n-out|seven eleven|7-eleven|home depot|best buy|panda express|subway)\b", re.I)
-# go_to targets that are a whole room (walked room by room), not a thing in this room (the couch, the front door).
-ROOM_GOAL = re.compile(r"\b(rest ?rooms?|bath ?rooms?|toilets?|kitchen|bed ?rooms?|living room|dining room|office|laundry|"
-                       r"garage|lobby|hall ?way|reception|elevators?|stairs|exit|way out)\b", re.I)
 # Room words never mean maps. Named locations (a business, building, street, address) do.
 ROOM_WORDS = re.compile(r"\b(rest ?room|bath ?room|toilet|kitchen|bed ?room|living room|dining room|hallway|hall|"
                         r"closet|garage|laundry|office|door|stairs|room|sink|couch|desk|shelf)\b", re.I)
@@ -789,10 +772,6 @@ def run_tool(sess: dict, ctx: dict, name: str, args: dict) -> tuple[dict, dict |
         return {"ok": True}, {"type": "learn_start", "start": args.get("start") or "here", "name": args.get("destination", "a place")}
     if name == "learn_route_end":
         return {"ok": True}, {"type": "learn_end"}
-    if name in ("go_to", "go_to_room") and ROOM_GOAL.search(args.get("room") or "restroom") and not (ctx.get("trip") or {}).get("at_goal"):
-        # A room that isn't this one: a trip, one room at a time (the brain re-plans after each). Once a report says
-        # they're in it, go_to runs for real and confirms it by seeing proof.
-        return run_tool(sess, ctx, "leave_here", {"goal": args.get("room") or "restroom"})
     if name in ("go_to", "go_to_room"):
         room = args.get("room", "restroom").lower()
         # A room is proven by what's in it; any other target is proven by seeing the target itself.
@@ -800,19 +779,6 @@ def run_tool(sess: dict, ctx: dict, name: str, args: dict) -> tuple[dict, dict |
         # The brain repeated the old note out loud ("...and verify the proof", trip 03:52): plain words only.
         return {"ok": True, "note": "Started. The app guides them step by step. Just say you're on the way."}, \
             {"type": "mission", "room": room, "via": "door", "proof": proof[:4]}
-    if name == "leave_here":
-        pid = args.get("place_id") or ""
-        p, r = sess["places"].get(pid), sess["routes"].get(pid)
-        goal = str(args.get("goal") or "").strip() or (p["name"] if p else "outside")
-        # A room goal stays indoors (no GPS); the exit, "outside" or a named place means the trip leaves the building.
-        outside = bool(p) or bool(re.search(r"\b(outside|outdoors|exit|way out|street)\b", goal, re.I)) or names_a_location(goal)
-        if outside:
-            sess["outside"] = True
-        act = {"type": "leave", "goal": goal, "outside": outside}
-        if p:
-            act.update(name=p["name"], to={"lat": p["lat"], "lon": p["lon"]}, steps=(r or {}).get("steps"), place_id=pid)
-        return {"ok": True, "note": "Started one room: the app leads them out of this room. Say you're on the way; "
-                                    "an (app) report comes when they're in the next space."}, act
     if name == "find_object":
         # Trip 2026-10-25 03:59: with "the app is guiding now" the brain told the user "I found your blue towel" before
         # the camera had seen anything.
@@ -875,9 +841,6 @@ def agent(session: str, heard: str, ctx: dict, indoor_event: dict | None = None)
     msgs = [{"role": "system", "content": SYSTEM_BRAIN + heard_note + f"\n\nStatus now: {json.dumps(status)}\n{known}"},
             *sess["history"][-12:], {"role": "user", "content": heard}]
     action, used, nudged = None, [], False
-    trip = ctx.get("trip") or {}
-    # A trip report that isn't at the goal needs a next step, not a chat line (the 14B often just narrates).
-    report_open = heard.startswith("(app)") and not trip.get("at_goal") and not (trip.get("outside") and not trip.get("place_id"))
     for _ in range(1 if indoor_event else 5):
         m = chat(BRAIN_URL, msgs, tools=None if indoor_event else TOOLS, max_tokens=260, timeout=20 if indoor_event else 40)
         calls = m.get("tool_calls") or []
@@ -897,7 +860,7 @@ def agent(session: str, heard: str, ctx: dict, indoor_event: dict | None = None)
                                                      "with category 'named', then get_route, then say the plan and ask)."}]
                 continue
             if (not indoor_event and not nudged and not walmart_lookup and names_a_location(heard) and not heard.startswith("(app)") and used
-                    and not any(u["tool"] in ("find_places", "get_route", "start_navigation", "leave_here", "home_depot", "get_walmart_location", "indoor_workflow") for u in used)):
+                    and not any(u["tool"] in ("find_places", "get_route", "start_navigation", "home_depot", "get_walmart_location", "indoor_workflow") for u in used)):
                 nudged = True; action = None   # e.g. where_am_i for "find me the Target at UCSD"
                 msgs += [{"role": "assistant", "content": say},
                          {"role": "user", "content": "(system) They named a place to go. Call find_places with category 'named' and that name now."}]
@@ -910,13 +873,6 @@ def agent(session: str, heard: str, ctx: dict, indoor_event: dict | None = None)
                          {"role": "user", "content": f"(system) They're being guided to {ctx['navigating_to']} right now. If they "
                                                      "say it's blocked, a dead end, or they're stuck, call blocked. Otherwise "
                                                      "answer in a few words, without starting a new search."}]
-                continue
-            if report_open and not used and not nudged and not say.rstrip().endswith("?"):
-                nudged = True
-                nxt = (f"get_route then start_navigation with place_id {trip['place_id']}" if trip.get("outside")
-                       else f"leave_here with goal '{trip.get('goal', 'outside')}' to go through the next room")
-                msgs += [{"role": "assistant", "content": say},
-                         {"role": "user", "content": f"(system) That was a trip report and they're not at the goal yet. Call the next tool now: {nxt}."}]
                 continue
             break
         msgs.append({"role": "assistant", "content": m.get("content") or "", "tool_calls": calls})

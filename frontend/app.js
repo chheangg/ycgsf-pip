@@ -812,17 +812,6 @@ function buildPath(latlons, steps) {   // -> {o, P: [{x, z, s}], total, man: [{s
   man.sort((x, y) => x.s - y.s);
   return { o, P, total, man, side };
 }
-async function looksOutside() {   // one camera frame: is this outdoors (not a room, not a view through a door)?
-  try {
-    const blob = await frameBlob(); if (!blob) return false;
-    const fd = new FormData(); fd.append("image", blob, "f.jpg"); fd.append("room", "outside");
-    const c = await (await fetch(SERVER + "/check_room", { method: "POST", body: fd, signal: AbortSignal.timeout(8000) })).json();
-    log("outside before the route?", c.room, c.looking_through_doorway ? "(through a doorway)" : "", `gps ±${Math.round(S.fix?.acc ?? 0)} m`);
-    if (c.looking_through_doorway) return false;
-    const room = String(c.room).toLowerCase();   // facing a wall outdoors it says "unknown": only a named room means inside
-    return room === "outside" || (room === "unknown" && gpsGood(15));
-  } catch (e) { log("outside check failed", e.message); return false; }
-}
 // ---------- blocked spots: a confirmed gate or hedge on the route, so a new route goes around it ----------
 // Trip 15:58: blocked at a gate, then Apple Maps' new route went the same way into another wall. A spot counts as
 // blocked only when LiDAR and the camera agree; routes passing within 20 m of one are skipped (GPS error here was
@@ -855,27 +844,26 @@ async function routeAvoiding(here, to) {   // -> {route, via, all}: the first Ap
   }
   return { route: null, all: routes.length };
 }
+const LAST_LEG_M = 15;   // the route's end farther than this from the place: add a straight last leg (GPS error ~5-15 m)
 // go: they already said yes (coming out of a building): start right away instead of asking again.
 async function gpsWalk(name, to, serverSteps, entrance = true, { go = false, placeId = null, where = "" } = {}) {   // where: ", on Library Walk"   // entrance: at the end, find the door with the camera
   ensureGPS(); ensureCamera();
   S.find = null; S.route = null; S.back = null; S.mission = null; S.walk = null; const tok = S.walkTok = {};
   for (let i = 0; i < 30 && !gpsGood(30); i++) { if (i === 0) say("Getting your location."); await new Promise((r) => setTimeout(r, 500)); }
   if (S.walkTok !== tok) return;
-  // Inside? Weak GPS says so, but indoors Wi-Fi location often looks good, so the camera has the last word: a street
-  // route from inside a room points you at a wall. Inside -> get out room by room first, then this route.
-  const justOut = Date.now() - (S.outsideAt || 0) < 120000;   // a trip just walked them out: don't send them back in
-  const inside = !gpsGood(30) || (NATIVE && !justOut && !(await looksOutside()));
-  if (S.walkTok !== tok) return;
-  if (inside) {
-    if (NATIVE && !S.trip?.out) return leaveStart({ dest: { name, to, steps: serverSteps, placeId } });
-    if (!gpsGood(30)) return say("GPS is weak here. Step outside or near a window, and ask me again.");
-  }
+  // Straight to the route on GPS, inside or not (user, 16:55 trips: the room escape before every route cost more than it
+  // helped; indoors here GPS was ±3-16 m). Getting out room by room only runs when asked ("get me out of here").
+  if (!gpsGood(30)) return say("GPS is weak here. Step outside or near a window, and ask me again.");
   const here = { lat: S.fix.lat, lon: S.fix.lon };
   let path = null, secs = null;
   if (NATIVE) {
     const { route: d, via, all } = await routeAvoiding(here, to);
     if (d?.points?.length > 1) {
-      path = buildPath(d.points.map(([lat, lon]) => ({ lat, lon })), d.steps); secs = d.seconds;
+      const pts = d.points.map(([lat, lon]) => ({ lat, lon }));
+      // Apple's walking route stops on its walkway network, which can be well short of a big building (Geisel, 17:01):
+      // the last leg goes straight to the place itself.
+      if (dist(pts.at(-1), to) > LAST_LEG_M) pts.push({ lat: to.lat, lon: to.lon });
+      path = buildPath(pts, d.steps); secs = d.seconds;
       log("apple maps route", name, Math.round(path.total), "m", d.points.length, "shape points,", path.man.length, "turns",
           via ? "(around a blocked spot)" : all > 1 ? `(of ${all} routes)` : "");
     } else if (all && liveBlocks().length) {
@@ -915,12 +903,17 @@ function bestPlace(query, places, here) {
   const named = scored.filter((p) => p.hit >= 0.5 && p.d <= Math.max(2000, 3 * nearest));
   return named.length ? named.sort((a, b) => b.hit - a.hit || a.d - b.d)[0] : scored.sort((a, b) => a.d - b.d)[0];   // else: just the nearest
 }
+// Places pinned by hand where the map's point is off: Apple put Target mid-building in Price Center and its route ended
+// on the wrong side. This pin is Google's for the store (maps.app.goo.gl/m1sYMT92rVTqJvgb8), ~80 m from Apple's.
+const PINNED = [{ words: /\btarget\b/i, name: "Target", lat: 32.8792434, lon: -117.2373308, where: ", at Price Center" }];
 async function placeSearch(query) {
   if (!query) return say("What place should I look for?");
   ensureGPS(); say("Looking it up.");
   for (let i = 0; i < 20 && !gpsGood(100); i++) await new Promise((r) => setTimeout(r, 500));
   if (!S.fix) return say("I can't get your location yet. Ask me again in a moment.");
   const here = { lat: S.fix.lat, lon: S.fix.lon };
+  const pin = PINNED.find((x) => x.words.test(query));
+  if (pin) { log("pinned place:", pin.name, pin.lat, pin.lon); return gpsWalk(pin.name, { lat: pin.lat, lon: pin.lon }, null, true, { where: pin.where }); }
   const qs = [...new Set([cleanQuery(query), query])];   // the plain name first, the words as said too
   const answers = NATIVE ? await Promise.all(qs.map((q) => askNative({ type: "search", q, lat: here.lat, lon: here.lon }, 10000))) : [];
   const seen = new Set(), places = answers.flatMap((r) => r?.places || []).filter((p) => { const k = `${p.name}|${p.address}`; return !seen.has(k) && seen.add(k); });
@@ -932,7 +925,7 @@ async function placeSearch(query) {
 function previewGo() {   // GO key, or "yes"
   const p = S.preview; if (!p) return;
   S.preview = null;
-  if (!gpsGood(30)) return NATIVE ? leaveStart({ dest: { name: p.name, to: p.to, steps: p.steps, placeId: p.placeId } }) : say("GPS is weak here. Step outside or near a window, and ask me again.");
+  if (!gpsGood(30)) return say("GPS is weak here. Step outside or near a window, and ask me again.");
   S.walk = { name: p.name, to: p.to, steps: p.steps, entrance: p.entrance, path: true, ...p.path, pts: p.path.man.map((m) => ({ gps: null, s: m.s })), i: 0, k: 0, m: 0, phase: "go", onCourse: true,
              saidAt: 0, bearAt: 0, offPathAt: 0, lostSince: null, lostSaid: false, dest: p.entrance ? { name: p.name, to: p.to } : null };
   render();
@@ -1111,6 +1104,21 @@ async function pathCheck(w) {
   } catch (e) { log("path check failed", e.message); }
   finally { w.pathBusy = false; }
 }
+// Close to the place, but the route still goes around (Geisel, 17:0x: on the path straight to the entrance, Pip kept
+// saying "140 meters, then turn right" because Apple's route went round to the address on Hopkins Dr): go straight there.
+const SHORTCUT_M = 80, SHORTCUT_RATIO = 1.6;   // within 80 m in a line, and the route left is 1.6x that plus 20 m
+function shortcut(w, g) {
+  if (!w.to || w.direct || Date.now() - (w.shortcutAt || 0) < 5000) return false;
+  w.shortcutAt = Date.now();
+  const line = dist(S.fix, w.to), left = w.total - g.s;
+  if (line > SHORTCUT_M || left < line * SHORTCUT_RATIO + 20) return false;
+  log("shortcut:", w.name, Math.round(line), "m in a line vs", Math.round(left), "m of route left");
+  const p = buildPath([{ lat: S.fix.lat, lon: S.fix.lon }, { lat: w.to.lat, lon: w.to.lon }], []);
+  Object.assign(w, p, { pts: [], i: 0, k: 0, m: 0, direct: true, phase: "go" });
+  say(`${w.name} is about ${distWords(line)} ahead. I'll take you straight there.`);
+  gpsLeg(w, false);
+  return true;
+}
 function gpsCue() {
   const w = S.walk, now = Date.now();
   if (!gpsGood(30)) {
@@ -1123,6 +1131,7 @@ function gpsCue() {
   const around = N.pose ? blockedStep(w) : undefined; if (around !== undefined) return around;
   aroundCheck(w);
   const g = gpsWhere(w);
+  if (shortcut(w, g)) return null;
   pathCheck(w); sideCheck(w);
   if (w.bias && now < w.biasUntil && compassNow() != null) g.off = angleDiff(compassNow(), g.want + w.bias);   // the camera's path over GPS
   w.i = w.m; w.s = g.s; w.e = g.e; w.g = g;
@@ -1774,7 +1783,6 @@ function hopDone(m, how, c = null) {
   const p = leaveProgress(m, L.marks[L.hop0 || 0]);          // since this hop started
   S.mission = null; render(); doneChime();
   if (!T) return say(how === "outside" ? "We're outside." : "Okay, we're out.");
-  if (how === "outside") S.outsideAt = Date.now();
   T.hops++; T.nowIn = now; T.out = how === "outside"; T.atGoal = Boolean(c?.inside); if (now) T.rooms.push(now);
   T.carry = { visited: m.visited, decisions: m.decisions, history: m.history, legs: m.legs, backtracks: m.backtracks, tried: m.tried,
               leave: { marks: L.marks, os: L.os, oc: L.oc, goalB: L.goalB } };
@@ -2538,7 +2546,13 @@ async function localLoop() {
         S.demoBoxes = { boxes: r.boxes || [], at: Date.now() };
         if (S.seg) S.seg.landmarks.push(...r.landmarks);
         const near = r.hazards.find((h) => h.near && h.side === "ahead");
-        if (near && !NATIVE && guiding() && !S.learning && Date.now() - hazardSaidAt > 6000) { hazardSaidAt = Date.now(); say(`Careful, ${near.label} ahead.`, { urgent: true }); }
+        // Trip 17:0x: the detector boxed a fire hydrant and the user still walked into it: on the phone only LiDAR
+        // warned, and a low hydrant drops out of LiDAR's middle band as you get close. The detector speaks too now.
+        if (near && guiding() && !S.learning && Date.now() - hazardSaidAt > 5000) {
+          hazardSaidAt = Date.now(); obstacleSeen(near.label);
+          const d = N.depth, side = d ? (d.left >= d.right ? "left" : "right") : null;
+          say(`Careful, ${near.label} ahead.${side ? ` Step ${side}.` : ""}`, { urgent: true });
+        }
         $("clear").textContent = `${r.hint.replace("_", " ")} · ${r.ms} ms`;
         $("clear").className = "v " + (r.hint === "clear" ? "ok" : r.hint === "stop" ? "bad" : "warn");
       } catch (e) { $("clear").textContent = "no model"; S.hint = "clear"; }
@@ -2634,7 +2648,9 @@ async function askPipNow({ body, text }) {
   } catch (e) { S.serverDown = Date.now(); say("I can't reach my planner right now."); log(e); }
 }
 // Short answers the phone handles itself: "yes" / "no" after a route preview, and what to find after the FIND key.
-const YES = /^\W*(yes|yeah|yep|yup|sure|ok(ay)?|go|let'?s go|take me( there)?|start|please)\b/i, NO = /^\W*(no|nope|cancel|never ?mind|not now|stop)\b/i;
+// A reply to "Want me to take you?" often starts with a filler ("Uh, yes please, let's go." went to the brain, 16:58).
+const FILLER = /^\W*((uh+|um+|hmm+|oh|okay|ok|all ?right|alright|so|well|yeah so|hey pip|pip)\W+)*/i;
+const YES = /^(yes|yeah|yep|yup|sure|ok(ay)?|go|let'?s go|go ahead|take me( there)?|start|please|do it)\b/i, NO = /^(no|nope|cancel|never ?mind|not now|stop|don'?t)\b/i;
 // "Mark that" / "that was wrong": a MARK line in the trip recording, so a bad moment can be found later
 // (tools/trip_report.py lists marks first). The rest of the sentence is kept as the note.
 const MARK = /^\W*(mark (that|this|it)|that was wrong)\b/i;
@@ -2647,8 +2663,9 @@ function answerLocally(heard) {
     if (NO.test(heard)) { indoorCancel(); say("Okay."); render(); return true; }
   }
   if (MARK.test(heard)) { log("MARK", heard); say("Marked."); return true; }
-  if (S.preview && NO.test(heard)) { previewCancel(); return true; }
-  if (S.preview && YES.test(heard)) { previewGo(); return true; }
+  const reply = heard.replace(FILLER, "");
+  if (S.preview && NO.test(reply)) { previewCancel(); return true; }
+  if (S.preview && YES.test(reply)) { previewGo(); return true; }
   if (S.findNext && Date.now() - S.findNext < 15000) {
     S.findNext = 0;
     const t = heard.replace(/^\W*(hey pip\W*)?(please\W*)?((can you |could you )?(find|look for|where'?s|where is)\W*)?((the|my|a|an|some)\s+)?/i, "").replace(/[.?!]+$/, "").trim();
