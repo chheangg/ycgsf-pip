@@ -31,11 +31,21 @@ This **supersedes** MLH's "11:30 AM, Price Center". A participant in Discord als
 | **Team size** | Solo or teams; all experience levels | MLH about |
 | **Bring** | Laptop, charger, curiosity | Get-ready email |
 | **Check-in / submit** | OrganizerHQ (MyMLH) | MLH / starting email |
-| **Initial submission** | **Sun Oct 25, 5:00 PM PDT** | Mohak, Discord #announcements 3:55 PM |
+| **Initial submission** | **Sun Oct 25, 5:30 PM PDT** *(pushed back from 5:00; only a saved project draft with teammates is needed)* | Mohak, Discord #announcements 5:05 PM |
 | **Hard submission cutoff** | **Sun Oct 25, 6:30 PM PDT** (no late submissions) | Mohak, Discord #announcements 3:55 PM + MLH challenge pages |
 | **Discord** | https://discord.gg/RHeZUMc2 (joined as bayshores) | Mohak email Sat Oct 24 ~10:47 PM PT |
 | **Judging** | **Video only, max 3 min, one video for all tracks; no live demos** | Mohak, Discord #announcements 4:19 PM |
 | **Kickoff slides** | https://docs.google.com/presentation/d/1ulUjxc7lzSHWFgdUkjWBOl_FtbAEniymBnvE39fVvp4/edit?usp=sharing | Discord |
+
+### Re-check ~5:12 PM PT: INITIAL SUBMISSION PUSHED TO 5:30
+
+- **Mohak [CLM], #announcements, 5:05 PM PT (@everyone):** "INITIAL SUBMISSIONS PUSHED BACK TO 5:30!! ALL YOU NEED TO DO IS SAVE A PROJECT DRAFT. We DO NOT require your projects to be complete. All we need is a project template made with your teammates on the platform."
+- Second 5:05 PM post ("Refer on how to add teammates") re-links the 3:55 PM info: save the project as a draft on MLH to get the add-teammates option; hard cutoff still **6:30 PM PT**, no late submissions.
+- Judging still video-only (max 3 min, one video). CNL's 3:07 PM credits question still unanswered. Personal Gmail unchanged.
+
+### Re-check ~5:04 PM PT
+
+- No material change. Mohak [CLM] posted a 5:00 PM PT @everyone reminder in #announcements: "Initial submissions are due NOW". #resources, #general, and #team-formation have nothing new, and CNL's 3:07 PM credits question is still unanswered. Personal Gmail is unchanged. The 6:30 PM PT hard cutoff still stands, and judging is still video-only.
 
 ### Re-check ~4:55 PM PT
 

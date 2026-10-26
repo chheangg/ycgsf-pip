@@ -67,3 +67,9 @@ Hacktoberfest FAQ: most common Hack Day prize is a special MLH+DEV merch swag ba
 - Graded ONLY on the video submitted on MLH's platform; max 3 minutes.
 - One video for all tracks you apply to; no separate per-track videos.
 - Disregard earlier judging info.
+
+
+## Update ~5:12 PM PT (Discord, Mohak 5:05 PM)
+
+- Initial submission pushed back from 5:00 PM to **5:30 PM PT**. Only a saved project draft on MLH with teammates added is required; the project need not be complete.
+- Hard submission cutoff unchanged: **6:30 PM PT**, no late submissions.
