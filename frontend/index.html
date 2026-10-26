@@ -10,7 +10,6 @@
 <script src="shaders.js"></script>
 <style>
   @font-face { font-family: "JetBrains Mono"; src: url("fonts/JetBrainsMono.woff2") format("woff2"); font-weight: 100 800; font-display: block; }
-  @font-face { font-family: "Inter"; src: url("fonts/Inter.woff2") format("woff2"); font-weight: 100 900; font-display: block; }
   :root {
     color-scheme: dark;
     --bg: #07070A; --fg: #FFFFFF; --dim: #EBEBF599; --line: #FFFFFF24; --panel: #FFFFFF12;
@@ -18,7 +17,6 @@
     --glass-base: #FFFFFF12; --label-2: #EBEBF599; --label-3: #EBEBF54D;
     --leader: #3A3934; --ink: #0A0A09;
     --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;   /* readouts, Pip's words, titles */
-    --font: "Inter", -apple-system, sans-serif;                  /* the glass controls: keys, Hold to talk, Deafen, chips */
   }
   * { box-sizing: border-box; margin: 0; }
   html { background: var(--bg); }
@@ -85,7 +83,7 @@
      tint and amount), and the shader's lit rim is drawn once per control size (--g-rim). Until set, plain colors show. */
   .key, #talk, #deafen, .chip, .place .go, .typebox, .typebox button {
     background: var(--g-rim, none) center / 100% 100% no-repeat var(--t-clear, var(--glass-base));
-    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); box-shadow: 0 6px 18px #00000052; font-family: var(--font); }
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); box-shadow: 0 6px 18px #00000052; }
   /* Glass shine: once, right after a screen's buttons build in, a soft light crosses them as one diagonal wave (--shine-at from ui.js) */
   #talk, #deafen { position: relative; overflow: hidden; }
   .key::after, #talk::after, #deafen::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
@@ -102,10 +100,10 @@
   .key { position: relative; flex: 1 1 0; min-width: 0; height: 104px; padding: 16px; display: flex; flex-direction: column; justify-content: space-between; align-items: flex-start;
          border-radius: 26px; color: var(--fg); overflow: hidden; }
   .key > * { position: relative; }
-  .key b { font-size: 20px; font-weight: 600; letter-spacing: -0.4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .key b { font-size: 20px; font-weight: 600; letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
   .key.row { height: 64px; flex-direction: row; justify-content: flex-start; align-items: center; gap: 12px; padding: 0 16px; }
   .key.wide { flex: none; width: 100%; height: 64px; flex-direction: row; justify-content: center; align-items: center; gap: 12px; padding: 0 16px; border-radius: 32px; }
-  .key.wide .ic { width: 20px; height: 20px; } .key.wide b { font-size: 17px; letter-spacing: -0.2px; }
+  .key.wide .ic { width: 20px; height: 20px; } .key.wide b { font-size: 17px; letter-spacing: 0; }
   .key.light, .key.done { background-color: var(--t-white, var(--fg)); color: var(--ink); }   /* Done: white flash with a check for 0.6 s */
   .key.hot { background-color: var(--t-pink, var(--accent)); color: var(--ink); }   /* Go, Resume */
   /* Pressed: pink spreads from where the finger landed (--px, --py from ui.js) in 160 ms, and fades after release */
@@ -122,14 +120,14 @@
   /* Dock (Listening): Places · Setup */
   .dock .key { height: 76px; padding: 16px; gap: 6px; flex-direction: column; justify-content: space-between; align-items: flex-start; }
   .dock .key .ic { width: 20px; height: 20px; }
-  .dock .key b { font-size: 15px; letter-spacing: -0.2px; }
+  .dock .key b { font-size: 15px; letter-spacing: 0; }
   .krow.dock { display: grid; grid-template-columns: 1fr 1fr; }   /* equal cells (flex would widen the padded keys) */
   /* Voice Bar (components "Talk" / "Talk · On", "Deafen" / "Deafen · On"): one shared bar; ui.js moves it into the active screen */
   #voicebar { display: flex; gap: 10px; }
   #talk, #deafen { height: 64px; padding: 0 22px; display: flex; align-items: center; gap: 12px; border-radius: 32px; color: var(--fg); }
   #talk { flex: 1; min-width: 0; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }   /* held, not tapped */
   #talk .ic, #deafen .ic { width: 20px; height: 20px; }
-  #talk b, #deafen b { font-size: 17px; font-weight: 600; letter-spacing: -0.2px; }
+  #talk b, #deafen b { font-size: 17px; font-weight: 600; letter-spacing: 0; }
   #talk.on, #deafen.on, #deafen.pressed { background-color: var(--t-pink, var(--accent)); color: var(--ink); }
 
   /* Readout: KEY ········ VALUE */
@@ -205,7 +203,7 @@
   /* Say Chip: what you can say */
   .chip { display: inline-flex; align-items: center; gap: 10px; padding: 12px 16px; border-radius: 24px; background-color: var(--t-chip, var(--glass-base)); max-width: 100%; }
   .chip .ic { width: 18px; height: 18px; color: var(--accent); }
-  .chip span { font-size: 16px; font-weight: 500; letter-spacing: -0.2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip span { font-size: 16px; font-weight: 500; letter-spacing: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   /* lists: setup, places, log */
   .hdr { display: flex; justify-content: space-between; align-items: flex-end; padding: 12px 0 8px; flex-shrink: 0; }
