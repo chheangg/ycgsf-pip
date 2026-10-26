@@ -53,6 +53,7 @@ struct PipWebView: UIViewRepresentable {
         private var uploadTimer: Timer?
         private var server = "http://100.71.218.127:8100"
         private var tick = 0
+        private let recorder = Recorder()
 
         init(sensors: Sensors) {
             self.sensors = sensors
@@ -108,6 +109,17 @@ struct PipWebView: UIViewRepresentable {
                     let json = pts.map { "[" + $0.map { "{\"x\":\($0.x),\"z\":\($0.y)}" }.joined(separator: ",") + "]" } ?? "null"
                     DispatchQueue.main.async { self.js("window.pipNative && window.pipNative.pinned(\(id), \(json))") }
                 }
+            case "cloud":   // the demo's 3D view: LiDAR points [x, y, z, ...] in meters (empty without LiDAR)
+                let id = body["id"] as? Int ?? 0
+                let pts = sensors.useAR ? sensors.ar.cloud() : []
+                let json = "[" + pts.map { String(format: "%.2f", $0) }.joined(separator: ",") + "]"
+                js("window.pipNative && window.pipNative.pinned(\(id), \(json))")
+            case "record":  // demo recording of the screen and app sound, saved to Photos -> {ok, error?}
+                let id = body["id"] as? Int ?? 0, on = body["on"] as? Bool ?? false
+                let reply: (String?) -> Void = { err in
+                    self.js("window.pipNative && window.pipNative.pinned(\(id), {ok: \(err == nil), error: \(err.map { "'\($0.replacingOccurrences(of: "'", with: " "))'" } ?? "null")})")
+                }
+                on ? recorder.start(reply) : recorder.stop(reply)
             case "read":
                 // Signs and labels in view (Apple Vision on the phone): [{text, conf, u, v, h, bearing, x?, z?, d?}]
                 let id = body["id"] as? Int ?? 0

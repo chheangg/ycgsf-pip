@@ -172,12 +172,14 @@ async def local(image: UploadFile = File(...)):
     band = d[int(d.shape[0] * 0.35):]
     thirds = np.array_split(band, 3, axis=1)
     close = [float(np.percentile(t, 92)) for t in thirds]
-    hazards = []
+    hazards, boxes = [], []
     for b in det.boxes:
         label = det.names[int(b.cls[0])]
+        x1, y1, x2, y2 = b.xyxy[0].tolist()
+        boxes.append({"label": label, "conf": round(float(b.conf[0]), 2),   # every detection, for the demo's camera view
+                      "box": [round(x1 / w, 3), round(y1 / h, 3), round(x2 / w, 3), round(y2 / h, 3)]})
         if label not in HAZARDS:
             continue
-        x1, y1, x2, y2 = b.xyxy[0].tolist()
         cx, frac = (x1 + x2) / 2 / w, (y2 - y1) / h
         side = "left" if cx < 0.36 else "right" if cx > 0.64 else "ahead"
         near = frac > 0.45 or (frac > 0.25 and y2 / h > 0.8)
@@ -191,6 +193,7 @@ async def local(image: UploadFile = File(...)):
         hint = "clear"
     return {"clear": {"left": round(1 - close[0], 2), "ahead": round(1 - close[1], 2), "right": round(1 - close[2], 2)},
             "hazards": sorted(hazards, key=lambda x: (not x["near"], x["side"] != "ahead"))[:5],
+            "boxes": sorted(boxes, key=lambda x: -x["conf"])[:8],
             "landmarks": sorted({x["label"] for x in hazards if x["label"] in LANDMARKS}),
             "hint": hint, "ms": round((time.time() - t0) * 1000)}
 

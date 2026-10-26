@@ -28,6 +28,7 @@ targets:
         NSCameraUsageDescription: Pip looks ahead with the camera to find doors, rooms, and objects for you.
         NSMicrophoneUsageDescription: Pip listens so you can talk to it.
         NSMotionUsageDescription: Pip measures your turns and steps to guide you and walk you back.
+        NSPhotoLibraryAddUsageDescription: Pip saves demo recordings of its screen to your photos.
         NSLocationWhenInUseUsageDescription: Pip uses GPS only when you ask to go somewhere outside.
         NSLocalNetworkUsageDescription: Pip talks to its model server on your network.
         NSAppTransportSecurity:

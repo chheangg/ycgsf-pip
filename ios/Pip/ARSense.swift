@@ -143,6 +143,33 @@ final class ARSense: NSObject, ARSessionDelegate {
                                      options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.7])
     }
 
+    /// The LiDAR depth as a point cloud for the demo's 3D view: a grid of up to ~1200 points from the latest frame,
+    /// in meters from the phone, portrait axes (x right, y up, z ahead).
+    func cloud() -> [Float] {
+        lock.lock(); let latest = lastFrame; lock.unlock()
+        guard let frame = latest, let sd = frame.smoothedSceneDepth ?? frame.sceneDepth else { return [] }
+        let map = sd.depthMap
+        CVPixelBufferLockBaseAddress(map, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(map, .readOnly) }
+        let w = CVPixelBufferGetWidth(map), h = CVPixelBufferGetHeight(map), row = CVPixelBufferGetBytesPerRow(map)
+        guard let base = CVPixelBufferGetBaseAddress(map) else { return [] }
+        let res = frame.camera.imageResolution, K = frame.camera.intrinsics
+        let sx = Float(w) / Float(res.width), sy = Float(h) / Float(res.height)
+        let fx = K[0][0] * sx, fy = K[1][1] * sy, cx = K[2][0] * sx, cy = K[2][1] * sy
+        var out: [Float] = []
+        out.reserveCapacity(3600)
+        for v in stride(from: 0, to: h, by: max(1, h / 30)) {
+            let p = base.advanced(by: v * row).assumingMemoryBound(to: Float32.self)
+            for u in stride(from: 0, to: w, by: max(1, w / 40)) {
+                let d = p[u]
+                guard d.isFinite, d > 0.1, d < 6 else { continue }
+                // sensor x runs portrait top->bottom, sensor y portrait right->left (see sectors below)
+                out += [-(Float(v) - cy) * d / fy, -(Float(u) - cx) * d / fx, d]
+            }
+        }
+        return out
+    }
+
     /// Nearest distance (meters) in the portrait left / center / right thirds of the middle band.
     private func sectors(_ map: CVPixelBuffer) -> Depth {
         CVPixelBufferLockBaseAddress(map, .readOnly)

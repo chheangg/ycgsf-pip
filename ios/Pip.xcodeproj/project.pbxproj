@@ -10,13 +10,14 @@
 		04CC2ABB7F11D1233BCA471D /* PipApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04DBF09B070F547C3EAEF3D3 /* PipApp.swift */; };
 		4449FB165799FE6DD7037BEC /* Camera.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BFFD412DEB58240C4004B9B /* Camera.swift */; };
 		5C1A7BDF950ECDAAA86CAC2F /* Mic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24C5B8743151076F8025CC32 /* Mic.swift */; };
+		69A4C2AF875D351135844CD9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4A1D04922425BF3F4F42545E /* Assets.xcassets */; };
 		71A9B4012B07C296D21E0DE2 /* Sensors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E5DC748729ED31260C0C881 /* Sensors.swift */; };
+		89E27D4DB01BB069F283D100 /* frontend in Resources */ = {isa = PBXBuildFile; fileRef = 735B5CF588C7CB9BF356D1FD /* frontend */; };
 		9E36290CC072D3E559D73283 /* PipWebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB352097BF14FC0C13FD2D76 /* PipWebView.swift */; };
 		B1FB3AEE818EE3F75ECE556D /* SlamMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1901CE7DECD071FA8FF0A063 /* SlamMap.swift */; };
 		C3AD6B18704060DD0BB5B88E /* Voice.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEE1693222459511FEC618DF /* Voice.swift */; };
-		D04D77AB224FF20EF3BC55E8 /* frontend in Resources */ = {isa = PBXBuildFile; fileRef = 720246A4287D33D7CB280CDE /* frontend */; };
 		F12AC71A094C73EBCB1E96D8 /* ARSense.swift in Sources */ = {isa = PBXBuildFile; fileRef = 445951235A82C3B51A198F5E /* ARSense.swift */; };
-		A1C0FFEE00000000000000B1 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1C0FFEE00000000000000F1 /* Assets.xcassets */; };
+		F8D729A985D3384D8519C10C /* Recorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9ACEA28BFD0A68C7354A587 /* Recorder.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -25,13 +26,14 @@
 		24C5B8743151076F8025CC32 /* Mic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Mic.swift; sourceTree = "<group>"; };
 		2816EE3F59121AA350C23BC0 /* Pip.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Pip.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		445951235A82C3B51A198F5E /* ARSense.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ARSense.swift; sourceTree = "<group>"; };
-		720246A4287D33D7CB280CDE /* frontend */ = {isa = PBXFileReference; lastKnownFileType = folder; name = frontend; path = ../frontend; sourceTree = SOURCE_ROOT; };
+		4A1D04922425BF3F4F42545E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		735B5CF588C7CB9BF356D1FD /* frontend */ = {isa = PBXFileReference; lastKnownFileType = folder; name = frontend; path = ../frontend; sourceTree = SOURCE_ROOT; };
 		8BFFD412DEB58240C4004B9B /* Camera.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Camera.swift; sourceTree = "<group>"; };
 		8E5DC748729ED31260C0C881 /* Sensors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sensors.swift; sourceTree = "<group>"; };
+		A9ACEA28BFD0A68C7354A587 /* Recorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Recorder.swift; sourceTree = "<group>"; };
 		BEE1693222459511FEC618DF /* Voice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Voice.swift; sourceTree = "<group>"; };
 		C86C408FF845EE060E865DEC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		FB352097BF14FC0C13FD2D76 /* PipWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PipWebView.swift; sourceTree = "<group>"; };
-		A1C0FFEE00000000000000F1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -39,12 +41,13 @@
 			isa = PBXGroup;
 			children = (
 				445951235A82C3B51A198F5E /* ARSense.swift */,
-				A1C0FFEE00000000000000F1 /* Assets.xcassets */,
+				4A1D04922425BF3F4F42545E /* Assets.xcassets */,
 				8BFFD412DEB58240C4004B9B /* Camera.swift */,
 				C86C408FF845EE060E865DEC /* Info.plist */,
 				24C5B8743151076F8025CC32 /* Mic.swift */,
 				04DBF09B070F547C3EAEF3D3 /* PipApp.swift */,
 				FB352097BF14FC0C13FD2D76 /* PipWebView.swift */,
+				A9ACEA28BFD0A68C7354A587 /* Recorder.swift */,
 				8E5DC748729ED31260C0C881 /* Sensors.swift */,
 				1901CE7DECD071FA8FF0A063 /* SlamMap.swift */,
 				BEE1693222459511FEC618DF /* Voice.swift */,
@@ -55,7 +58,7 @@
 		ABF1985BB6D1B563A913453D = {
 			isa = PBXGroup;
 			children = (
-				720246A4287D33D7CB280CDE /* frontend */,
+				735B5CF588C7CB9BF356D1FD /* frontend */,
 				2433A7587CC7B21136212892 /* Pip */,
 				FC49FF952088E1404A5D6E87 /* Products */,
 			);
@@ -129,8 +132,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1C0FFEE00000000000000B1 /* Assets.xcassets in Resources */,
-				D04D77AB224FF20EF3BC55E8 /* frontend in Resources */,
+				69A4C2AF875D351135844CD9 /* Assets.xcassets in Resources */,
+				89E27D4DB01BB069F283D100 /* frontend in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -146,6 +149,7 @@
 				5C1A7BDF950ECDAAA86CAC2F /* Mic.swift in Sources */,
 				04CC2ABB7F11D1233BCA471D /* PipApp.swift in Sources */,
 				9E36290CC072D3E559D73283 /* PipWebView.swift in Sources */,
+				F8D729A985D3384D8519C10C /* Recorder.swift in Sources */,
 				71A9B4012B07C296D21E0DE2 /* Sensors.swift in Sources */,
 				B1FB3AEE818EE3F75ECE556D /* SlamMap.swift in Sources */,
 				C3AD6B18704060DD0BB5B88E /* Voice.swift in Sources */,

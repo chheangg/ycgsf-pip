@@ -34,7 +34,26 @@ This **supersedes** MLH's "11:30 AM, Price Center". A participant in Discord als
 | **Initial submission** | **Sun Oct 25, 5:00 PM PDT** | Mohak, Discord #announcements 3:55 PM |
 | **Hard submission cutoff** | **Sun Oct 25, 6:30 PM PDT** (no late submissions) | Mohak, Discord #announcements 3:55 PM + MLH challenge pages |
 | **Discord** | https://discord.gg/RHeZUMc2 (joined as bayshores) | Mohak email Sat Oct 24 ~10:47 PM PT |
+| **Judging** | **Video only, max 3 min, one video for all tracks; no live demos** | Mohak, Discord #announcements 4:19 PM |
 | **Kickoff slides** | https://docs.google.com/presentation/d/1ulUjxc7lzSHWFgdUkjWBOl_FtbAEniymBnvE39fVvp4/edit?usp=sharing | Discord |
+
+### Re-check ~4:55 PM PT
+
+- No material change. Discord (#announcements, #resources, #general, #team-formation) has nothing after Mohak's 4:19 PM PT video-only judging post (edited 4:20 PM). CNL's 3:07 PM credits question is still unanswered. Personal Gmail is unchanged. Treat 5:00 PM PT initial / 6:30 PM PT hard cutoff as still in effect.
+
+### Re-check ~4:49 PM PT
+
+- No material change. Discord (#announcements, #resources, #general, #team-formation) has nothing after Mohak's 4:19 PM PT video-only judging post (edited 4:20 PM; no visible diff). CNL's 3:07 PM credits question is still unanswered. Personal Gmail is unchanged. Treat 5:00 PM PT initial / 6:30 PM PT hard cutoff as still in effect.
+
+### Re-check ~4:35 PM PT
+
+- No material change. Discord (#announcements, #resources, #general, #team-formation) has nothing after Mohak's 4:19 PM PT video-only judging post. CNL's 3:07 PM credits question is still unanswered. Personal Gmail is unchanged. Treat 5:00 PM PT initial / 6:30 PM PT hard cutoff as still in effect.
+
+### Re-check ~4:26 PM PT: JUDGING CHANGED (video only)
+
+- **Mohak [CLM], #announcements, 4:19 PM PT (edited 4:20, @everyone), "IMPORTANT ANNOUNCEMENT REGARDING JUDGING (again)":** NO live demos/presentations. Projects are graded ONLY on the video submitted on MLH's platform. Videos must be **3 minutes or less**. Make ONE video covering all tracks you're applying to, not separate videos per track. "Pls disregard any other information regarding judging before the message."
+- The post doesn't restate the 5:00 PM initial / 6:30 PM hard-cutoff deadlines from 3:55 PM; unclear whether "disregard" covers them. Treat 5:00 / 6:30 PM PT as still in effect until told otherwise (6:30 PM also matches MLH's own page).
+- CNL's 3:07 PM credits question still unanswered. Personal Gmail unchanged.
 
 ### Re-check ~4:18 PM PT
 

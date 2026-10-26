@@ -266,6 +266,29 @@
   @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
   /* Larger Text: keys stack to one column */
   .large .krow { flex-direction: column; } .large .key { height: auto; min-height: 72px; } .large .dock .key { min-height: 64px; } .large #voicebar { flex-direction: column; } .large #talk, .large #deafen { height: auto; min-height: 64px; }
+  /* Demo view (recorded demos): the camera with what the detector sees, which model is thinking, the live LiDAR in 3D
+     while passing an obstacle, and a record button. Only design tokens; kept small so the scene isn't crowded. */
+  .demo { position: fixed; left: 12px; right: 12px; top: calc(env(safe-area-inset-top) + 8px); z-index: 50; pointer-events: none; }
+  .demo-cam { position: relative; width: 100%; aspect-ratio: 3 / 4; max-height: 46vh; border-radius: 18px; overflow: hidden;
+              background: var(--ink); border: 1px solid var(--line); }
+  .demo-cam img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .demo-box { position: absolute; border: 2px solid var(--accent); border-radius: 6px; }
+  .demo-box.near { border-color: var(--bad); }
+  .demo-box em { position: absolute; left: -2px; top: -22px; padding: 2px 6px; border-radius: 5px; background: var(--accent);
+                 color: var(--ink); font: 600 12px var(--mono); font-style: normal; white-space: nowrap; }
+  .demo-box.near em { background: var(--bad); color: var(--fg); }
+  .demo-call { position: absolute; left: 10px; bottom: 10px; padding: 4px 10px; border-radius: 99px; background: var(--panel);
+               border: 1px solid var(--line); color: var(--fg); font: 500 12px var(--font); opacity: 0; transition: opacity .25s; }
+  .demo-call.on { opacity: 1; }
+  .demo-call i { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--accent);
+                 animation: demo-pulse 0.9s ease-in-out infinite; }
+  @keyframes demo-pulse { 50% { opacity: .25; } }
+  .demo-3d { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; transition: opacity .9s; background: var(--ink); }
+  .demo-3d.on { opacity: .92; }
+  .demo-rec { position: absolute; right: 10px; top: 10px; pointer-events: auto; padding: 6px 12px; border-radius: 99px;
+              background: var(--panel); border: 1px solid var(--line); color: var(--fg); font: 600 13px var(--font); }
+  .demo-rec.on { background: var(--bad); border-color: var(--bad); }
+  @media (prefers-reduced-motion: reduce) { .demo-call i { animation: none; } .demo-3d { transition: none; } }
 </style>
 </head>
 <body>
@@ -458,6 +481,12 @@
 <div id="voicebar">
   <button id="talk" aria-label="Hold to talk"><span id="talk-ic"><script>document.write(icon("mic"))</script></span><b id="talk-l">Hold to talk</b></button>
   <button id="deafen" aria-pressed="false" aria-label="Deafen Pip"><span id="deafen-ic"><script>document.write(icon("headphones"))</script></span><b id="deafen-l">Deafen</b></button>
+</div>
+<!-- demo view: shown while demo mode is on (triple-tap the top of the screen to toggle) -->
+<div id="demo" class="demo" hidden>
+  <div class="demo-cam" aria-hidden="true"><img id="demo-img" alt=""><div id="demo-boxes"></div><canvas id="demo-3d" class="demo-3d"></canvas>
+    <span id="demo-call" class="demo-call"></span></div>
+  <button id="demo-rec" class="demo-rec" aria-label="Record the screen">● REC</button>
 </div>
 <video id="cam" class="offscreen" autoplay muted playsinline></video>
 

@@ -60,3 +60,10 @@
 ## General Hacktoberfest Hack Day prize note
 
 Hacktoberfest FAQ: most common Hack Day prize is a special MLH+DEV merch swag bag awarded on site to winning team(s). Not a cash prize unless a host says otherwise (**no cash amounts found** for this Fest). SpaceXSI track lists Cursor Pro+ (6 months) instead of cash.
+
+## Judging update (Mohak, Discord #announcements, Sun Oct 25 4:19 PM PT, edited 4:20)
+
+- No live demos or presentations.
+- Graded ONLY on the video submitted on MLH's platform; max 3 minutes.
+- One video for all tracks you apply to; no separate per-track videos.
+- Disregard earlier judging info.

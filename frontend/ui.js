@@ -666,6 +666,13 @@ function drawLog(force) {
 // ---------- keys ----------
 const on = (id, f) => el(id)?.addEventListener("click", f);
 el("scr-start").addEventListener("click", () => start());
+on("demo-rec", () => demoRecord());
+let topTaps = [];   // triple-tap the top of the screen: demo view on/off
+document.addEventListener("pointerdown", (e) => {
+  if (e.clientY > 70 || e.target.closest?.("#demo-rec")) return;
+  const now = Date.now(); topTaps = [...topTaps.filter((x) => now - x < 700), now];
+  if (topTaps.length >= 3) { topTaps = []; demoToggle(); }
+});
 on("btn-places", () => { overlay = "places"; });
 on("btn-setup", () => { overlay = "setup"; });
 document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => { overlay = null; }));
@@ -729,10 +736,59 @@ function voiceKeys() {
 }
 
 // ---------- loop ----------
+// ---------- demo view: the camera with up to 3 detections, the model that's thinking, LiDAR 3D near obstacles ----------
+const DEMO_BOXES = 3, DEMO_3D_MS = 5000, DEMO_NEAR_M = 1.5;   // 3 boxes keeps the scene readable; 3D stays 5 s after the last obstacle
+let demoFor = null, demoUrl = null;
+function demoView() {
+  const box = el("demo"); box.hidden = !S.demo || !started; if (box.hidden) return;
+  if (S.demoBlob && S.demoBlob !== demoFor) {
+    demoFor = S.demoBlob; if (demoUrl) URL.revokeObjectURL(demoUrl);
+    demoUrl = URL.createObjectURL(S.demoBlob); el("demo-img").src = demoUrl;
+  }
+  const now = Date.now(), fresh = S.demoBoxes && now - S.demoBoxes.at < 1500 ? S.demoBoxes.boxes : [];
+  const meters = (b) => { const cx = (b.box[0] + b.box[2]) / 2, d = N.depth; return d ? (cx < 0.36 ? d.left : cx > 0.64 ? d.right : d.ahead) : null; };
+  const html = fresh.slice(0, DEMO_BOXES).map((b) => {
+    const m = meters(b), near = m != null && m < DEMO_NEAR_M, [x1, y1, x2, y2] = b.box;
+    return `<div class="demo-box${near ? " near" : ""}" style="left:${x1 * 100}%;top:${y1 * 100}%;width:${(x2 - x1) * 100}%;height:${(y2 - y1) * 100}%">` +
+           `<em>${esc(b.label)}${m != null && m < 8 ? ` · ${m.toFixed(1)} m` : ""}</em></div>`;
+  }).join("");
+  const boxes = el("demo-boxes"); if (boxes._h !== html) { boxes._h = html; boxes.innerHTML = html; }
+  const call = [...S.calls.values()][0], chip = el("demo-call");
+  chip.classList.toggle("on", Boolean(call)); if (call) chip.innerHTML = `<i></i>thinking · ${esc(call)}`;
+  const rec = el("demo-rec"), secs = Math.floor((now - (S.recordAt || now)) / 1000);
+  rec.classList.toggle("on", Boolean(S.recording));
+  rec.textContent = S.recording ? `■ ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}` : "● REC";
+  if (S.obstacleAt && N.depth && N.depth.ahead < DEMO_NEAR_M && now - S.obstacleAt < DEMO_3D_MS) S.obstacleAt = now;   // still beside it
+}
+function draw3d(t) {   // the live LiDAR cloud, turning slowly so it reads as 3D; the near points are the obstacle
+  const cv = el("demo-3d"), show = S.demo && S.obstacleAt && Date.now() - S.obstacleAt < DEMO_3D_MS;
+  cv.classList.toggle("on", Boolean(show));
+  if (!show) return;
+  pollCloud();
+  const cloud = S.cloud || [];
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+  const g = cv.getContext("2d"); g.clearRect(0, 0, W, H);
+  const yaw = reduced() ? 0.35 : Math.sin(t * 0.6) * 0.55, cy = Math.cos(yaw), sy = Math.sin(yaw), f = W * 0.9, mid = 2;
+  const near = css("--bad"), scene = css("--fg");   // the whole scene in light grey (nearer = brighter), what's close in red
+  for (let i = 0; i + 2 < cloud.length; i += 3) {
+    const x = cloud[i], y = cloud[i + 1], z = cloud[i + 2];
+    const xr = x * cy - (z - mid) * sy, zr = x * sy + (z - mid) * cy + mid + 1;
+    if (zr < 0.3) continue;
+    const close = z < DEMO_NEAR_M;
+    g.fillStyle = close ? near : scene; g.globalAlpha = close ? 1 : Math.max(0.35, 0.95 - z / 8);
+    const r = Math.max(2.5, 8 / zr);
+    g.fillRect(W / 2 + (f * xr) / zr - r / 2, H / 2 - (f * y) / zr - r / 2, r, r);
+  }
+  g.globalAlpha = 1; g.fillStyle = css("--fg"); g.font = `600 13px ${css("--mono")}`;
+  const ahead = N.depth?.ahead;
+  g.fillText(`LiDAR 3D${S.obstacleWhat ? ` · ${S.obstacleWhat}` : ""}${ahead != null && ahead < 8 ? ` · ${ahead.toFixed(1)} m` : ""}`, 12, 22);
+}
 function tick() {
   const name = pick(); go(name);
   document.body.classList.toggle("offline", serverDown());
   try {
+    demoView();
     if (name === "listen") listen();
     else if (name === "guide") guide();
     else if (name === "find") find();
@@ -759,6 +815,7 @@ let waveAt = 0;
     if (current === "find" && GL["f-vf"]) GL["f-vf"](still ? 0 : t, { u_color: vec3(css("--accent")), u_grid: 25 });
     if (current === "search" && GL["s-vf"]) GL["s-vf"](still ? 0 : t, { u_color: vec3(css("--accent")), u_grid: 25 });
     if (current === "teach" && teachMap) drawMap(el("t-map"), teachMap);
+    if (!el("demo").hidden) draw3d(t);
     // black base: the canvas is screen-blended over the glass, so only the moving light shows (the design's Working key is glass)
     for (const draw of sweeps.values()) draw(t, { u_base: [0, 0, 0], u_shine: vec3(css("--accent")), u_speed: 0.7 });
   } catch (e) { if (!frame.err) { frame.err = true; log("animation error:", e.message); } }
