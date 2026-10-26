@@ -148,6 +148,27 @@ function audioLoop() {
   if (!c) nextTap = 0;
   requestAnimationFrame(audioLoop);
 }
+// Ambient sound (Setup > AMBIENT SOUND): a quiet low hum that moves slowly, so you can hear that Pip is open and how it
+// is. It stays under ~600 Hz and plays the same in both ears, so it doesn't cover the taps (880-2600 Hz) or sound like a
+// direction. It dips while anyone talks, goes silent while Pip guides with taps or is deafened, and turns darker and a
+// semitone lower when Pip can't reach its server. Laptop only for now: in the iPhone app all sound is native.
+const ambientOn = () => (localStorage.getItem("pip.ambient") ?? "1") === "1";
+const AMBIENT = [[110, "sine", 1], [110.6, "triangle", 0.5], [164.81, "sine", 0.6], [440, "sine", 0.08]];   // A2 twice, 0.6 Hz apart so it slowly beats; E3; a faint A4
+let amb = null;
+function ambientLoop() {
+  if (!amb) {
+    const out = ac.createGain(), lp = ac.createBiquadFilter(), lfo = ac.createOscillator(), sway = ac.createGain();
+    out.gain.value = 0; lp.type = "lowpass"; lp.frequency.value = 500;
+    lfo.frequency.value = 0.07; sway.gain.value = 150; lfo.connect(sway).connect(lp.frequency); lfo.start();   // opens and closes every ~14 s
+    const oscs = AMBIENT.map(([f, type, v]) => { const o = ac.createOscillator(), g = ac.createGain(); o.type = type; o.frequency.value = f; g.gain.value = v; o.connect(g).connect(lp); o.start(); return o; });
+    lp.connect(out).connect(ac.destination);
+    amb = { out, lp, oscs };
+  }
+  const t = ac.currentTime, down = serverDown(), silent = !ambientOn() || deafened || guiding() || Boolean(S.find || S.orient);
+  amb.out.gain.setTargetAtTime(silent ? 0 : talking || speaking() || thinking() ? 0.012 : 0.04, t, 0.4);   // fades over ~1 s
+  amb.lp.frequency.setTargetAtTime(down ? 260 : talking ? 900 : 500, t, 0.5);
+  amb.oscs.forEach((o, i) => o.frequency.setTargetAtTime(AMBIENT[i][0] * (down ? 0.944 : 1), t, 0.8));
+}
 // Pip's voice: Kokoro-82M on the 4090 (natural), browser voice if the server is slow or down.
 // One voice at a time. While Pip is talking, only the NEWEST waiting line is kept (stale ones are dropped);
 // only urgent lines (obstacle, stop) cut in.
@@ -2460,7 +2481,7 @@ let started = false;
 async function start() {
   if (started) return; started = true;
   log("--- Pip started", new Date().toLocaleString(), "server", SERVER);
-  if (!NATIVE) ac = new AudioContext();         // in the app, all sound is native
+  if (!NATIVE) { ac = new AudioContext(); setInterval(ambientLoop, 250); }   // in the app, all sound is native
   $("start").remove();
   say(NATIVE ? "Hi, I'm Pip. To talk to me, hold the bar at the bottom of the screen." : "Hi, I'm Pip. To talk to me, hold space.");
   checkServer(); setInterval(checkServer, 15000);

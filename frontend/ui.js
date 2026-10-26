@@ -641,7 +641,8 @@ el("pl-list").addEventListener("click", (e) => {
 
 // ---------- 05 Setup, 05b Log ----------
 function setup() {
-  const inv = invert(); setCls("v-invert", inv ? "switch on" : "switch"); el("row-invert").setAttribute("aria-checked", inv);
+  const showSwitch = (name, on) => { setCls("v-" + name, on ? "switch on" : "switch"); el("row-" + name).setAttribute("aria-checked", on); };
+  showSwitch("invert", invert()); showSwitch("ambient", ambientOn()); showEl("row-ambient", !NATIVE);   // ambient sound: laptop only for now
   const cs = el("camsel");
   setText("v-camera", NATIVE ? (N.camera || "–") : cs.selectedOptions[0]?.textContent || "–");
   cs.hidden = NATIVE;
@@ -688,6 +689,7 @@ on("k-cancel", () => previewCancel());
 on("k-newroute", () => { overlay = null; say("Where to? Hold the talk bar and say: teach me the way to the kitchen."); });
 on("k-plspot", () => { saveSpot(`spot ${S.spots.length + 1}`); done("k-plspot"); drawPlaces(); });
 on("row-invert", () => { localStorage.setItem("pip.invert", invert() ? "0" : "1"); });
+on("row-ambient", () => { localStorage.setItem("pip.ambient", ambientOn() ? "0" : "1"); });
 on("k-viewlog", () => { overlay = "log"; });
 on("k-taps", () => {
   say("Left.");
